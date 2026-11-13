@@ -1,4 +1,4 @@
--- My Cookie Store — Item List Extractor
+-- My Cookie Store — Item Extractor v2
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local LP = Players.LocalPlayer
@@ -30,7 +30,7 @@ c.Parent = f
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 32)
 title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-title.Text = "Extracting items..."
+title.Text = "Extracting..."
 title.TextColor3 = Color3.fromRGB(120, 220, 140)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 12
@@ -68,7 +68,7 @@ sfc.CornerRadius = UDim.new(0, 6)
 sfc.Parent = sf
 
 local tb = Instance.new("TextBox")
-tb.Size = UDim2.new(1, -16, 0, 5000)
+tb.Size = UDim2.new(1, -16, 0, 8000)
 tb.Position = UDim2.new(0, 8, 0, 8)
 tb.BackgroundTransparency = 1
 tb.Text = "Starting..."
@@ -80,7 +80,7 @@ tb.TextYAlignment = Enum.TextYAlignment.Top
 tb.MultiLine = true
 tb.TextEditable = true
 tb.ClearTextOnFocus = false
-tb.TextWrapped = true
+tb.TextWrapped = false
 tb.ZIndex = 202
 tb.Parent = sf
 
@@ -91,135 +91,168 @@ local function add(s)
     sf.CanvasSize = UDim2.new(0, 0, 0, #out * 16 + 40)
 end
 
-add("=== MY COOKIE STORE ITEM EXTRACT ===")
+add("=== MY COOKIE STORE ITEM EXTRACT v2 ===")
+add("PlaceId: " .. tostring(game.PlaceId))
 add("")
 
--- APPROACH 1: Try requiring the Items ModuleScript
-add("--- ATTEMPT 1: require(Shared.Items) ---")
-local itemsModule = RS:FindFirstChild("CookieStore")
-itemsModule = itemsModule and itemsModule:FindFirstChild("Shared")
-itemsModule = itemsModule and itemsModule:FindFirstChild("Items")
+-- Helper: safe attribute dump
+local function attrStr(obj)
+    local ok, attrs = pcall(function() return obj:GetAttributes() end)
+    if not ok or not attrs then return "" end
+    local parts = {}
+    for k, v in pairs(attrs) do
+        table.insert(parts, k .. "=" .. tostring(v))
+    end
+    if #parts == 0 then return "" end
+    return " {" .. table.concat(parts, ", ") .. "}"
+end
 
-local data = nil
+-- Helper: safe size
+local function getSize(obj)
+    if obj:IsA("BasePart") then
+        return string.format("%.2f x %.2f x %.2f", obj.Size.X, obj.Size.Y, obj.Size.Z)
+    end
+    if obj:IsA("Model") then
+        local ok, ext = pcall(function() return obj:GetExtentsSize() end)
+        if ok and ext then
+            return string.format("%.2f x %.2f x %.2f", ext.X, ext.Y, ext.Z)
+        end
+    end
+    return nil
+end
+
+-- ===== SECTION 1: Try Shared.Build.Grid for grid size info =====
+add("--- Shared.Build.Grid ---")
+local shared = RS:FindFirstChild("CookieStore")
+shared = shared and shared:FindFirstChild("Shared")
+local build = shared and shared:FindFirstChild("Build")
+local gridModule = build and build:FindFirstChild("Grid")
+
+if gridModule then
+    local ok, result = pcall(require, gridModule)
+    if ok then
+        if type(result) == "table" then
+            for k, v in pairs(result) do
+                if type(v) ~= "table" and type(v) ~= "function" then
+                    add("  " .. tostring(k) .. " = " .. tostring(v) .. " (" .. type(v) .. ")")
+                elseif type(v) == "table" then
+                    local sub = {}
+                    for sk, sv in pairs(v) do
+                        if #sub >= 5 then break end
+                        table.insert(sub, tostring(sk) .. "=" .. tostring(sv))
+                    end
+                    add("  " .. tostring(k) .. " = {" .. table.concat(sub, ", ") .. "}")
+                end
+            end
+        else
+            add("  grid = " .. tostring(result) .. " (" .. type(result) .. ")")
+        end
+    else
+        add("  ✗ require failed: " .. tostring(result))
+    end
+else
+    add("  ✗ not found")
+end
+add("")
+
+-- ===== SECTION 2: Assets.Items =====
+add("--- Assets.Items ---")
+local assets = RS:FindFirstChild("CookieStore")
+assets = assets and assets:FindFirstChild("Assets")
+local itemsFolder = assets and assets:FindFirstChild("Items")
+
+if itemsFolder then
+    local items = itemsFolder:GetChildren()
+    add("Total items: " .. #items)
+    add("")
+
+    -- Sample structure of first 3 items
+    add("--- SAMPLE: first 3 items structure ---")
+    for i = 1, math.min(3, #items) do
+        local item = items[i]
+        add(string.format("%d. %s [%s]", i, item.Name, item.ClassName))
+        add("   size: " .. (getSize(item) or "?"))
+        add("   attrs: " .. (attrStr(item) ~= "" and attrStr(item) or "(none)"))
+        for _, sub in ipairs(item:GetChildren()) do
+            local sz = ""
+            if sub:IsA("BasePart") then
+                sz = string.format(" | size=%.2f,%.2f,%.2f", sub.Size.X, sub.Size.Y, sub.Size.Z)
+            end
+            add(string.format("   └─ %s [%s]%s%s", sub.Name, sub.ClassName, sz, attrStr(sub)))
+        end
+        add("")
+    end
+
+    -- Full item list
+    add("--- ALL ITEMS ---")
+    local sorted = {}
+    for _, it in ipairs(items) do table.insert(sorted, it) end
+    table.sort(sorted, function(a, b) return a.Name:lower() < b.Name:lower() end)
+
+    for _, item in ipairs(sorted) do
+        local sz = getSize(item) or "?"
+        local at = attrStr(item)
+        add(string.format("%-35s | %s | size: %s%s",
+            item.Name, item.ClassName, sz, at))
+    end
+else
+    add("✗ Assets.Items not found")
+end
+add("")
+
+-- ===== SECTION 3: Shared.Items module (top-level keys only) =====
+add("--- Shared.Items module ---")
+local itemsModule = shared and shared:FindFirstChild("Items")
+
 if itemsModule then
     local ok, result = pcall(require, itemsModule)
     if ok and type(result) == "table" then
-        data = result
-        add("✓ require succeeded, table with " .. #(function() local t = 0 for _ in pairs(result) do t = t + 1 end return t end)() .. " entries")
+        local count = 0
+        for _ in pairs(result) do count = count + 1 end
+        add("Top-level keys: " .. count)
+        add("")
+
+        local shown = 0
+        for k, v in pairs(result) do
+            shown = shown + 1
+            if shown > 10 then
+                add("... (showing first 10)")
+                break
+            end
+            add(string.format("[%s] = %s", tostring(k), type(v)))
+            if type(v) == "table" then
+                local sub = {}
+                local subCount = 0
+                for sk, sv in pairs(v) do
+                    subCount = subCount + 1
+                    if #sub < 12 then
+                        local svStr = type(sv) == "table" and "<table>" or tostring(sv)
+                        table.insert(sub, tostring(sk) .. "=" .. svStr)
+                    end
+                end
+                add("   subkeys (" .. subCount .. "): " .. table.concat(sub, ", "))
+            end
+        end
     else
         add("✗ require failed: " .. tostring(result))
     end
 else
-    add("✗ Items module not found")
+    add("✗ Shared.Items not found")
 end
-
--- APPROACH 2: Try requiring Furniture module
-if not data then
-    add("")
-    add("--- ATTEMPT 2: require(Shared.Furniture) ---")
-    local furn = RS.CookieStore.Shared:FindFirstChild("Furniture")
-    if furn and furn:IsA("ModuleScript") then
-        local ok, result = pcall(require, furn)
-        if ok and type(result) == "table" then
-            data = result
-            add("✓ require succeeded")
-        else
-            add("✗ require failed: " .. tostring(result))
-        end
-    end
-end
-
--- APPROACH 3: Read Assets.Items folder directly
-if not data then
-    add("")
-    add("--- ATTEMPT 3: Read Assets.Items folder ---")
-    local assetsItems = RS.CookieStore:FindFirstChild("Assets")
-    assetsItems = assetsItems and assetsItems:FindFirstChild("Items")
-
-    if assetsItems then
-        local children = assetsItems:GetChildren()
-        add("✓ Found " .. #children .. " children in Assets.Items")
-        add("")
-
-        for _, child in ipairs(children) do
-            local info = { name = child.Name, className = child.ClassName }
-
-            -- Try part size
-            if child:IsA("Model") then
-                local part = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
-                if part then
-                    info.size = string.format("%.2f x %.2f x %.2f", part.Size.X, part.Size.Y, part.Size.Z)
-                end
-            elseif child:IsA("BasePart") then
-                info.size = string.format("%.2f x %.2f x %.2f", child.Size.X, child.Size.Y, child.Size.Z)
-            end
-
-            -- Attributes
-            local attrs = child:GetAttributes()
-            local attrList = {}
-            for k, v in pairs(attrs) do
-                table.insert(attrList, k .. "=" .. tostring(v))
-            end
-            if #attrList > 0 then
-                info.attrs = table.concat(attrList, ", ")
-            end
-
-            -- Decal/Texture for icon ID
-            local decal = child:FindFirstChildWhichIsA("Decal") or child:FindFirstChildWhichIsA("Texture")
-            if decal and decal.Texture then
-                info.texture = decal.Texture
-            end
-
-            add(string.format("%-40s | %s%s%s", 
-                info.name, 
-                info.className,
-                info.size and (" | size: " .. info.size) or "",
-                info.attrs and (" | " .. info.attrs) or ""))
-        end
-    else
-        add("✗ Assets.Items not found")
-    end
-end
-
--- If we got data from module, walk it
-if data then
-    add("")
-    add("--- MODULE DATA ---")
-
-    local function walk(tbl, depth)
-        if depth > 3 then return end
-        for k, v in pairs(tbl) do
-            if type(v) == "table" then
-                -- Check if this looks like an item (has name or size)
-                local itemName = v.Name or v.DisplayName or v.Id or tostring(k)
-                local itemSize = v.Size or v.GridSize or v.TileSize or v.Width or v.Height
-                local itemPrice = v.Price or v.Cost or v.PriceCoins
-
-                if itemSize or itemPrice then
-                    local sizeStr = "?"
-                    if type(itemSize) == "table" then
-                        if itemSize.X then
-                            sizeStr = string.format("%s x %s x %s", tostring(itemSize.X), tostring(itemSize.Y), tostring(itemSize.Z))
-                        elseif itemSize[1] then
-                            sizeStr = tostring(itemSize[1]) .. " x " .. tostring(itemSize[2] or "?")
-                        end
-                    else
-                        sizeStr = tostring(itemSize)
-                    end
-                    add(string.format("%-40s | size: %s%s", 
-                        tostring(itemName), 
-                        sizeStr,
-                        itemPrice and (" | price: " .. tostring(itemPrice)) or ""))
-                else
-                    walk(v, depth + 1)
-                end
-            end
-        end
-    end
-    walk(data, 0)
-end
-
 add("")
+
+-- ===== SECTION 4: Shared.ItemSets folder =====
+add("--- Shared.ItemSets folder ---")
+local itemSets = shared and shared:FindFirstChild("ItemSets")
+if itemSets then
+    for _, child in ipairs(itemSets:GetChildren()) do
+        add(string.format("  %s [%s] kids=%d", child.Name, child.ClassName, #child:GetChildren()))
+    end
+else
+    add("✗ not found")
+end
+add("")
+
 add("=== DONE ===")
 
 local text = table.concat(out, "\n")
@@ -227,4 +260,4 @@ local copied = false
 pcall(function() if setclipboard then setclipboard(text); copied = true end end)
 if not copied then pcall(function() if toclipboard then toclipboard(text); copied = true end end) end
 
-title.Text = "Extract done — " .. (copied and "copied" or "see box")
+title.Text = "Done — " .. (copied and "copied" or "scroll box") .. " | " .. #out .. " lines"
