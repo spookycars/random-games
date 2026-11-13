@@ -1,21 +1,17 @@
--- My Cookie Store Diagnostic — UI first, error-proof
+-- My Cookie Store — Item List Extractor
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
-local WS = game:GetService("Workspace")
 local LP = Players.LocalPlayer
 local PG = LP:FindFirstChild("PlayerGui")
 
-if not PG then
-    warn("PlayerGui not found")
-    return
-end
+if not PG then warn("No PlayerGui") return end
 
--- CREATE UI IMMEDIATELY
-local old = PG:FindFirstChild("CookieDiag")
+-- UI
+local old = PG:FindFirstChild("CookieExtract")
 if old then old:Destroy() end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "CookieDiag"
+sg.Name = "CookieExtract"
 sg.ResetOnSpawn = false
 sg.Parent = PG
 
@@ -34,8 +30,8 @@ c.Parent = f
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 32)
 title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-title.Text = "Cookie Store Scan — running..."
-title.TextColor3 = Color3.fromRGB(255, 200, 80)
+title.Text = "Extracting items..."
+title.TextColor3 = Color3.fromRGB(120, 220, 140)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 12
 title.ZIndex = 201
@@ -75,7 +71,7 @@ local tb = Instance.new("TextBox")
 tb.Size = UDim2.new(1, -16, 0, 5000)
 tb.Position = UDim2.new(0, 8, 0, 8)
 tb.BackgroundTransparency = 1
-tb.Text = "UI loaded successfully.\nScanning..."
+tb.Text = "Starting..."
 tb.TextColor3 = Color3.fromRGB(220, 220, 230)
 tb.Font = Enum.Font.Code
 tb.TextSize = 11
@@ -95,113 +91,132 @@ local function add(s)
     sf.CanvasSize = UDim2.new(0, 0, 0, #out * 16 + 40)
 end
 
-add("=== MY COOKIE STORE BUILD SCAN ===")
-add("PlaceId: " .. tostring(game.PlaceId))
+add("=== MY COOKIE STORE ITEM EXTRACT ===")
 add("")
 
-local keywords = {"item", "build", "furniture", "decor", "place", "shop", "catalog", "cookie", "store", "grid", "tile", "pixel", "block", "object", "prop"}
+-- APPROACH 1: Try requiring the Items ModuleScript
+add("--- ATTEMPT 1: require(Shared.Items) ---")
+local itemsModule = RS:FindFirstChild("CookieStore")
+itemsModule = itemsModule and itemsModule:FindFirstChild("Shared")
+itemsModule = itemsModule and itemsModule:FindFirstChild("Items")
 
-local function matchesKeyword(name)
-    local lower = tostring(name):lower()
-    for _, kw in ipairs(keywords) do
-        if lower:find(kw, 1, true) then return kw end
+local data = nil
+if itemsModule then
+    local ok, result = pcall(require, itemsModule)
+    if ok and type(result) == "table" then
+        data = result
+        add("✓ require succeeded, table with " .. #(function() local t = 0 for _ in pairs(result) do t = t + 1 end return t end)() .. " entries")
+    else
+        add("✗ require failed: " .. tostring(result))
     end
-    return nil
-end
-
-local found = {}
-
--- Scan ReplicatedStorage
-add("--- ReplicatedStorage ---")
-pcall(function()
-    for _, obj in ipairs(RS:GetDescendants()) do
-        if obj:IsA("Folder") or obj:IsA("Configuration") or obj:IsA("ModuleScript") then
-            local kw = matchesKeyword(obj.Name)
-            if kw then
-                local kids = 0
-                pcall(function() kids = #obj:GetChildren() end)
-                add(string.format("[%s] %s | %s | %d kids | %s", kw:upper(), obj.Name, obj.ClassName, kids, obj:GetFullName()))
-                table.insert(found, obj)
-            end
-        end
-    end
-end)
-add("")
-
--- Scan Workspace top-level
-add("--- Workspace top-level ---")
-pcall(function()
-    for _, obj in ipairs(WS:GetChildren()) do
-        if obj:IsA("Folder") or obj:IsA("Model") then
-            local kw = matchesKeyword(obj.Name)
-            if kw then
-                add(string.format("[%s] %s | %s | %d kids", kw:upper(), obj.Name, obj.ClassName, #obj:GetChildren()))
-                table.insert(found, obj)
-            end
-        end
-    end
-end)
-add("")
-
--- Scan PlayerGui
-add("--- PlayerGui ---")
-pcall(function()
-    for _, obj in ipairs(PG:GetDescendants()) do
-        local kw = matchesKeyword(obj.Name)
-        if kw and (obj:IsA("Frame") or obj:IsA("ScrollingFrame") or obj:IsA("Folder") or obj:IsA("ModuleScript")) then
-            add(string.format("[%s] %s | %s | %d kids | %s", kw:upper(), obj.Name, obj.ClassName, #obj:GetChildren(), obj:GetFullName()))
-            table.insert(found, obj)
-        end
-    end
-end)
-add("")
-
--- Pick the best container
-local best = nil
-local bestCount = 0
-for _, obj in ipairs(found) do
-    local cc2 = 0
-    pcall(function() cc2 = #obj:GetChildren() end)
-    if cc2 > bestCount and cc2 < 500 then
-        best = obj
-        bestCount = cc2
-    end
-end
-
-if best then
-    add("=== LIKELY CONTAINER ===")
-    add(best:GetFullName())
-    add("Children: " .. bestCount)
-    add("")
-    pcall(function()
-        local shown = 0
-        for _, child in ipairs(best:GetChildren()) do
-            shown = shown + 1
-            if shown > 30 then
-                add("... and " .. (bestCount - 30) .. " more")
-                break
-            end
-            local sizeInfo = ""
-            if child:IsA("Model") then
-                local part = child.PrimaryPart
-                if not part then part = child:FindFirstChildWhichIsA("BasePart") end
-                if part then
-                    sizeInfo = string.format(" [part %.2f x %.2f x %.2f]", part.Size.X, part.Size.Y, part.Size.Z)
-                end
-            end
-            local attrs = ""
-            local ok, a = pcall(function() return child:GetAttributes() end)
-            if ok and a then
-                for k, v in pairs(a) do
-                    attrs = attrs .. " " .. tostring(k) .. "=" .. tostring(v)
-                end
-            end
-            add(string.format("  %s (%s)%s%s", child.Name, child.ClassName, sizeInfo, attrs ~= "" and (" {" .. attrs .. "}") or ""))
-        end
-    end)
 else
-    add("=== NO CONTAINER FOUND ===")
-    add("Try: enter build mode, open item shop, then run again.")
+    add("✗ Items module not found")
+end
+
+-- APPROACH 2: Try requiring Furniture module
+if not data then
+    add("")
+    add("--- ATTEMPT 2: require(Shared.Furniture) ---")
+    local furn = RS.CookieStore.Shared:FindFirstChild("Furniture")
+    if furn and furn:IsA("ModuleScript") then
+        local ok, result = pcall(require, furn)
+        if ok and type(result) == "table" then
+            data = result
+            add("✓ require succeeded")
+        else
+            add("✗ require failed: " .. tostring(result))
+        end
+    end
+end
+
+-- APPROACH 3: Read Assets.Items folder directly
+if not data then
+    add("")
+    add("--- ATTEMPT 3: Read Assets.Items folder ---")
+    local assetsItems = RS.CookieStore:FindFirstChild("Assets")
+    assetsItems = assetsItems and assetsItems:FindFirstChild("Items")
+
+    if assetsItems then
+        local children = assetsItems:GetChildren()
+        add("✓ Found " .. #children .. " children in Assets.Items")
+        add("")
+
+        for _, child in ipairs(children) do
+            local info = { name = child.Name, className = child.ClassName }
+
+            -- Try part size
+            if child:IsA("Model") then
+                local part = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+                if part then
+                    info.size = string.format("%.2f x %.2f x %.2f", part.Size.X, part.Size.Y, part.Size.Z)
+                end
+            elseif child:IsA("BasePart") then
+                info.size = string.format("%.2f x %.2f x %.2f", child.Size.X, child.Size.Y, child.Size.Z)
+            end
+
+            -- Attributes
+            local attrs = child:GetAttributes()
+            local attrList = {}
+            for k, v in pairs(attrs) do
+                table.insert(attrList, k .. "=" .. tostring(v))
+            end
+            if #attrList > 0 then
+                info.attrs = table.concat(attrList, ", ")
+            end
+
+            -- Decal/Texture for icon ID
+            local decal = child:FindFirstChildWhichIsA("Decal") or child:FindFirstChildWhichIsA("Texture")
+            if decal and decal.Texture then
+                info.texture = decal.Texture
+            end
+
+            add(string.format("%-40s | %s%s%s", 
+                info.name, 
+                info.className,
+                info.size and (" | size: " .. info.size) or "",
+                info.attrs and (" | " .. info.attrs) or ""))
+        end
+    else
+        add("✗ Assets.Items not found")
+    end
+end
+
+-- If we got data from module, walk it
+if data then
+    add("")
+    add("--- MODULE DATA ---")
+
+    local function walk(tbl, depth)
+        if depth > 3 then return end
+        for k, v in pairs(tbl) do
+            if type(v) == "table" then
+                -- Check if this looks like an item (has name or size)
+                local itemName = v.Name or v.DisplayName or v.Id or tostring(k)
+                local itemSize = v.Size or v.GridSize or v.TileSize or v.Width or v.Height
+                local itemPrice = v.Price or v.Cost or v.PriceCoins
+
+                if itemSize or itemPrice then
+                    local sizeStr = "?"
+                    if type(itemSize) == "table" then
+                        if itemSize.X then
+                            sizeStr = string.format("%s x %s x %s", tostring(itemSize.X), tostring(itemSize.Y), tostring(itemSize.Z))
+                        elseif itemSize[1] then
+                            sizeStr = tostring(itemSize[1]) .. " x " .. tostring(itemSize[2] or "?")
+                        end
+                    else
+                        sizeStr = tostring(itemSize)
+                    end
+                    add(string.format("%-40s | size: %s%s", 
+                        tostring(itemName), 
+                        sizeStr,
+                        itemPrice and (" | price: " .. tostring(itemPrice)) or ""))
+                else
+                    walk(v, depth + 1)
+                end
+            end
+        end
+    end
+    walk(data, 0)
 end
 
 add("")
@@ -212,6 +227,4 @@ local copied = false
 pcall(function() if setclipboard then setclipboard(text); copied = true end end)
 if not copied then pcall(function() if toclipboard then toclipboard(text); copied = true end end) end
 
-title.Text = "Cookie Store Scan — " .. (copied and "copied to clipboard" or "DONE")
-add("")
-add("Clipboard: " .. (copied and "OK" or "FAILED — copy manually from this box"))
+title.Text = "Extract done — " .. (copied and "copied" or "see box")
