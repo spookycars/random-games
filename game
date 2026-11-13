@@ -1,187 +1,203 @@
-=== MY COOKIE STORE ITEM EXTRACT v2 ===
-PlaceId: 83407793249469
+-- My Cookie Store — Simple Catalog
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local LP = Players.LocalPlayer
+local PG = LP:FindFirstChild("PlayerGui")
 
---- Shared.Build.Grid ---
-  SMART_RADIUS = 7.5 (number)
-  SNAPS = {1=grid, 2=smart, 3=free}
-  STEPS = {fine=1, medium=5, large=10}
-  STEP_LIST = {1=40, 2=20, 3=10, 4=5, 5=1}
-  T = 10 (number)
-  OFFER = {1=40, 2=20, 3=10, 4=5}
-  ROTS = {1=45, 2=15, 3=1}
-  DEFAULT = {brot=45, bsnap=smart, bgrid=10, bfree=false, bgridOn=true}
+if not PG then warn("No PlayerGui") return end
 
---- Assets.Items ---
-Total items: 623
+local old = PG:FindFirstChild("CookieSimple")
+if old then old:Destroy() end
 
---- SAMPLE: first 3 items structure ---
-1. display_tray [Model]
-   size: 2.00 x 3.50 x 2.00
-   attrs:  {SlotTilt=10, FootprintW=2, LookTagged=1, SlotStack=1, ItemId=display_tray, Kind=display, FootprintD=2, FixB2_tray=true}
-   └─ Hitbox [Part] | size=2.00,3.50,2.00
-   └─ Leg [Part] | size=0.20,1.25,0.20 {LookShade=1, LookRole=wood}
-   └─ Leg [Part] | size=0.20,1.25,0.20 {LookShade=1, LookRole=wood}
-   └─ Leg [Part] | size=0.20,1.25,0.20 {LookShade=1, LookRole=wood}
-   └─ Leg [Part] | size=0.20,1.25,0.20 {LookShade=1, LookRole=wood}
-   └─ LowerShelf [Part] | size=1.88,0.10,1.88 {LookShade=1, LookRole=soft}
-   └─ Top [Part] | size=2.00,0.15,2.00 {LookShade=2, LookRole=wood}
-   └─ Apron [Part] | size=1.84,0.20,0.03 {LookShade=1, LookRole=soft}
-   └─ Scallop [Part] | size=0.03,0.32,0.32 {LookShade=1, LookRole=main}
-   └─ Scallop [Part] | size=0.03,0.32,0.32 {LookShade=1, LookRole=main}
-   └─ Scallop [Part] | size=0.03,0.32,0.32 {LookShade=1, LookRole=main}
-   └─ Tray [Part] | size=1.96,0.06,1.43 {LookShade=2, LookRole=main}
-   └─ Riser [Part] | size=1.90,1.70,0.55 {LookShade=1, LookRole=soft}
-   └─ Tray [Part] | size=1.96,0.06,0.93 {LookShade=2, LookRole=main}
-   └─ Tray [Part] | size=1.96,0.06,0.90 {LookShade=2, LookRole=main}
-   └─ Bracket [WedgePart] | size=0.08,0.40,0.50 {LookShade=1, LookRole=soft}
-   └─ Bracket [WedgePart] | size=0.08,0.40,0.50 {LookShade=1, LookRole=soft}
+local sg = Instance.new("ScreenGui")
+sg.Name = "CookieSimple"
+sg.ResetOnSpawn = false
+sg.Parent = PG
 
-2. display_luxury [Model]
-   size: 8.00 x 5.00 x 3.04
-   attrs:  {SlotTilt=4, FootprintW=8, FixB2_flatlogo=true, SlotStack=4, LookTagged=1, Kind=display, ItemId=display_luxury, FootprintD=3}
-   └─ Hitbox [Part] | size=8.00,5.00,3.00
-   └─ Plinth [Part] | size=7.80,0.20,2.80 {LookRole=keep}
-   └─ Cabinet [Part] | size=7.90,0.62,2.90 {LookShade=1, LookRole=soft}
-   └─ Panel [Part] | size=2.20,0.44,0.02 {LookShade=1, LookRole=main}
-   └─ Panel [Part] | size=2.20,0.44,0.02 {LookShade=1, LookRole=main}
-   └─ Panel [Part] | size=2.20,0.44,0.02 {LookShade=1, LookRole=main}
-   └─ Pilaster [Part] | size=0.16,0.62,0.03 {LookRole=keep}
-   └─ Pilaster [Part] | size=0.16,0.62,0.03 {LookRole=keep}
-   └─ Pilaster [Part] | size=0.16,0.62,0.03 {LookRole=keep}
-   └─ Pilaster [Part] | size=0.16,0.62,0.03 {LookRole=keep}
-   └─ FasciaCap [Part] | size=8.00,0.06,0.34 {LookRole=keep}
-   └─ GoldTop [Part] | size=7.94,0.08,2.94 {LookRole=keep}
-   └─ Mat [Part] | size=7.70,0.05,2.87 {LookShade=1, LookRole=soft}
-   └─ Shelf [Part] | size=7.78,0.05,2.19 {LookRole=keep}
-   └─ Mat [Part] | size=7.70,0.05,2.16 {LookShade=1, LookRole=soft}
-   └─ ShelfTrim [Part] | size=7.78,0.13,0.03 {LookRole=keep}
-   └─ ShelfLight [Part] | size=7.60,0.04,0.10 {LookRole=keep}
-   └─ Post [Part] | size=0.12,3.67,0.12 {LookRole=keep}
-   └─ Post [Part] | size=0.12,1.77,0.12 {LookRole=keep}
-   └─ Post [Part] | size=0.14,2.06,0.12 {LookRole=keep}
-   └─ SideGlass [Part] | size=0.06,3.65,2.08 {LookRole=keep}
-   └─ SideGlass [Part] | size=0.06,1.75,0.58 {LookRole=keep}
-   └─ SideGlass [WedgePart] | size=0.06,1.90,0.64 {LookRole=keep}
-   └─ Post [Part] | size=0.12,3.67,0.12 {LookRole=keep}
-   └─ Post [Part] | size=0.12,1.77,0.12 {LookRole=keep}
-   └─ Post [Part] | size=0.14,2.06,0.12 {LookRole=keep}
-   └─ SideGlass [Part] | size=0.06,3.65,2.08 {LookRole=keep}
-   └─ SideGlass [Part] | size=0.06,1.75,0.58 {LookRole=keep}
-   └─ SideGlass [WedgePart] | size=0.06,1.90,0.64 {LookRole=keep}
-   └─ FrontGlass [Part] | size=7.66,1.75,0.05 {LookRole=keep}
-   └─ FrontGlass [Part] | size=7.66,2.08,0.05 {LookRole=keep}
-   └─ Top [Part] | size=8.00,0.17,2.28 {LookShade=1, LookRole=soft}
-   └─ TopLight [Part] | size=7.60,0.04,0.10 {LookRole=keep}
-   └─ Fascia [Part] | size=8.00,0.22,0.30 {LookShade=1, LookRole=main}
-   └─ Logo [Part] | size=0.02,0.34,0.34 {LookRole=keep}
-   └─ LogoCookie [Part] | size=0.01,0.24,0.24 {LookRole=keep}
-   └─ LogoCap [Part] | size=0.01,0.19,0.19 {LookRole=keep}
-   └─ LogoEye [Part] | size=0.01,0.03,0.03 {LookRole=keep}
-   └─ LogoEye [Part] | size=0.01,0.03,0.03 {LookRole=keep}
-   └─ LogoSmile [Part] | size=0.05,0.01,0.01 {LookRole=keep}
-   └─ LogoChip [Part] | size=0.01,0.02,0.02 {LookRole=keep}
-   └─ LogoChip [Part] | size=0.01,0.02,0.02 {LookRole=keep}
+local f = Instance.new("Frame")
+f.Size = UDim2.new(1, -20, 1, -20)
+f.Position = UDim2.new(0, 10, 0, 10)
+f.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+f.BorderSizePixel = 0
+f.ZIndex = 200
+f.Parent = sg
 
-3. statue_golden [Model]
-   size: 2.03 x 9.00 x 2.00
-   attrs:  {FootprintW=2, LookTagged=1, Kind=decor, ItemId=statue_golden, FootprintD=2}
-   └─ Hitbox [Part] | size=2.00,9.00,2.00
-   └─ PlinthBase [Part] | size=1.96,0.22,1.96 {LookShade=1, LookRole=soft}
-   └─ Plinth [Part] | size=1.68,2.60,1.68 {LookShade=1, LookRole=soft}
-   └─ PlinthCap [Part] | size=1.92,0.22,1.92 {LookShade=1, LookRole=soft}
-   └─ Trim [Part] | size=1.72,0.08,1.72 {LookRole=keep}
-   └─ Trim [Part] | size=1.72,0.08,1.72 {LookRole=keep}
-   └─ Panel [Part] | size=1.24,1.40,0.04 {LookShade=3, LookRole=wood}
-   └─ Plaque [Part] | size=1.00,0.50,0.05 {LookRole=keep}
-   └─ Step [Part] | size=1.24,0.22,1.24 {LookRole=keep}
-   └─ Step [Part] | size=0.96,0.18,0.96 {LookRole=keep}
-   └─ Foot [Part] | size=0.12,0.72,0.72 {LookRole=keep}
-   └─ Stem [Part] | size=0.88,0.22,0.22 {LookRole=keep}
-   └─ StemKnot [Part] | size=0.18,0.44,0.44 {LookRole=keep}
-   └─ Cup [Part] | size=0.20,0.50,0.50 {LookRole=keep}
-   └─ Cup [Part] | size=0.30,0.82,0.82 {LookRole=keep}
-   └─ Cup [Part] | size=0.35,1.06,1.06 {LookRole=keep}
-   └─ CupRim [Part] | size=0.15,1.24,1.24 {LookRole=keep}
-   └─ Handle [Part] | size=0.44,0.10,0.10 {LookRole=keep}
-   └─ Handle [Part] | size=0.50,0.10,0.10 {LookRole=keep}
-   └─ Handle [Part] | size=0.77,0.10,0.10 {LookRole=keep}
-   └─ Handle [Part] | size=0.44,0.10,0.10 {LookRole=keep}
-   └─ Handle [Part] | size=0.50,0.10,0.10 {LookRole=keep}
-   └─ Handle [Part] | size=0.77,0.10,0.10 {LookRole=keep}
-   └─ Rosette [Part] | size=0.08,0.42,0.42 {LookShade=1, LookRole=wood}
-   └─ RosetteCentre [Part] | size=0.06,0.20,0.20 {LookRole=keep}
-   └─ RosetteTail [Part] | size=0.10,0.34,0.04 {LookShade=2, LookRole=wood}
-   └─ RosetteTail [Part] | size=0.10,0.34,0.04 {LookShade=2, LookRole=wood}
-   └─ GoldenCookie [MeshPart] | size=2.01,0.25,1.95 {BodyTop=0.285, LookRole=keep, Tex=rbxassetid://91788441085517, MaxisArt=DCookie_4_v5, TexN=rbxassetid://80695676188092}
-   └─ GoldenCookieBack [MeshPart] | size=2.01,0.25,1.95 {BodyTop=0.285, LookRole=keep, Tex=rbxassetid://91788441085517, MaxisArt=DCookie_4_v5, TexN=rbxassetid://80695676188092}
-   └─ Sparkle [Part] | size=0.16,0.16,0.04 {LookRole=keep}
-   └─ Sparkle [Part] | size=0.16,0.16,0.04 {LookRole=keep}
+local c = Instance.new("UICorner")
+c.CornerRadius = UDim.new(0, 8)
+c.Parent = f
 
---- ALL ITEMS ---
-ar_arch_round                       | Model | size: 6.12 x 9.00 x 1.10 {FootprintW=6, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_arch_round, FootprintD=1}
-ar_awning_metal                     | Model | size: 8.00 x 3.00 x 2.20 {WallDepth=2.2, FootprintW=8, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_awning_metal, FootprintD=1}
-ar_awning_scallop                   | Model | size: 8.00 x 3.00 x 2.40 {WallDepth=2.4, FootprintW=8, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_awning_scallop, FootprintD=1}
-ar_awning_stripe                    | Model | size: 8.00 x 3.00 x 2.42 {WallDepth=2.4, FootprintW=8, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_awning_stripe, FootprintD=1}
-ar_beam_brace                       | Model | size: 12.00 x 3.60 x 1.00 {FootprintW=12, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_beam_brace, FootprintD=1}
-ar_beam_ceiling                     | Model | size: 12.00 x 1.42 x 1.04 {FootprintW=12, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_beam_ceiling, FootprintD=1}
-ar_column_fluted                    | Model | size: 2.00 x 14.00 x 2.00 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_column_fluted, FootprintD=2}
-ar_column_post                      | Model | size: 2.00 x 14.00 x 2.00 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_column_post, FootprintD=2}
-ar_column_round                     | Model | size: 2.00 x 14.00 x 2.00 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_column_round, FootprintD=2}
-ar_column_square                    | Model | size: 2.00 x 14.00 x 2.00 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_column_square, FootprintD=2}
-ar_divider_glass                    | Model | size: 6.00 x 8.00 x 1.00 {FootprintW=6, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_divider_glass, FootprintD=1}
-ar_divider_slat                     | Model | size: 6.00 x 7.00 x 1.00 {FootprintW=6, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_divider_slat, FootprintD=1}
-ar_fence_hedge                      | Model | size: 4.00 x 3.40 x 2.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_fence_hedge, FootprintD=2}
-ar_fence_iron                       | Model | size: 4.00 x 4.20 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_fence_iron, FootprintD=1}
-ar_fence_lattice                    | Model | size: 4.00 x 5.20 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_fence_lattice, FootprintD=1}
-ar_fence_picket                     | Model | size: 4.00 x 3.70 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_fence_picket, FootprintD=1}
-ar_gate_iron                        | Model | size: 4.00 x 4.80 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_gate_iron, FootprintD=1}
-ar_gate_picket                      | Model | size: 4.00 x 4.10 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_gate_picket, FootprintD=1}
-ar_panel_moulding                   | Model | size: 4.00 x 6.00 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_panel_moulding, FootprintD=1}
-ar_panel_wainscot                   | Model | size: 6.00 x 3.50 x 1.00 {FootprintW=6, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_panel_wainscot, FootprintD=1}
-ar_rail_iron                        | Model | size: 4.00 x 3.40 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_rail_iron, FootprintD=1}
-ar_rail_wood                        | Model | size: 4.00 x 3.60 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_rail_wood, FootprintD=1}
-ar_screen_folding                   | Model | size: 6.00 x 6.00 x 2.00 {FootprintW=6, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_screen_folding, FootprintD=2}
-ar_shutter_louver                   | Model | size: 2.00 x 5.00 x 1.00 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_shutter_louver, FootprintD=1}
-ar_shutter_panel                    | Model | size: 2.00 x 5.00 x 1.00 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_shutter_panel, FootprintD=1}
-ar_skirt_lattice                    | Model | size: 4.05 x 1.00 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_skirt_lattice, FootprintD=1}
-ar_stairs_straight                  | Model | size: 4.00 x 4.80 x 4.00 {Ramp=2, FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_stairs_straight, FootprintD=4}
-ar_steps_short                      | Model | size: 4.00 x 1.00 x 2.00 {Ramp=1, FootprintW=4, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_steps_short, FootprintD=2}
-ar_windowbox                        | Model | size: 5.00 x 1.63 x 1.00 {WindowBoxKit=1, FootprintW=5, LookTagged=1, Kind=decor, Collection=Architecture, FxKit=1, ItemId=ar_windowbox, FootprintD=1}
-armchair_cozy                       | Model | size: 4.00 x 3.90 x 3.00 {FootprintW=4, LookTagged=1, PropV=1, PropParams={"bz":0,"y0":1.55,"bx":0,"kind":"sofa","k":0.692,"ax":1,"back":0.6,"az":1}, Kind=decor, ItemId=armchair_cozy, FootprintD=3}
-art_five_stars                      | Model | size: 3.00 x 2.00 x 1.00 {FootprintW=3, LookTagged=1, Kind=decor, ItemId=art_five_stars, FootprintD=1}
-balloon_air                         | Model | size: 2.00 x 4.00 x 2.00 {FootprintW=2, LookTagged=1, Kind=decor, ItemId=balloon_air, FootprintD=2}
-balloon_bunch                       | Model | size: 1.00 x 9.02 x 1.00 {FootprintW=1, LookTagged=1, Kind=decor, ItemId=balloon_bunch, FootprintD=1}
-bc_bed_raised                       | Model | size: 4.00 x 1.80 x 2.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_bed_raised, FootprintD=2}
-bc_bench_planter                    | Model | size: 7.06 x 2.80 x 3.00 {LookTagged=1, FootprintD=3, FootprintW=7, Kind=decor, PropV=1, Collection=Botanical Cafe, FxKit=1, SeatHeight=1.25, ItemId=bc_bench_planter}
-bc_cabinet_glass                    | Model | size: 3.06 x 6.50 x 2.05 {FootprintW=3, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_cabinet_glass, FootprintD=2}
-bc_can_watering                     | Model | size: 1.06 x 1.01 x 1.00 {FootprintW=1, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_can_watering, FootprintD=1}
-bc_chair_peacock                    | Model | size: 4.00 x 4.40 x 3.00 {LookTagged=1, FootprintD=3, FootprintW=4, Kind=decor, PropV=1, Collection=Botanical Cafe, FxKit=1, SeatHeight=1.25, ItemId=bc_chair_peacock}
-bc_chair_rattan                     | Model | size: 3.00 x 3.31 x 3.00 {LookTagged=1, FootprintD=3, FootprintW=3, Kind=decor, PropV=1, Collection=Botanical Cafe, FxKit=1, SeatHeight=1.25, ItemId=bc_chair_rattan}
-bc_greenhouse_mini                  | Model | size: 4.05 x 5.01 x 3.05 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_greenhouse_mini, FootprintD=3}
-bc_lamp_basket                      | Model | size: 2.04 x 3.00 x 2.04 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_lamp_basket, FootprintD=2}
-bc_lamp_cloche                      | Model | size: 1.00 x 1.70 x 1.00 {FootprintW=1, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_lamp_cloche, FootprintD=1}
-bc_panel_moss                       | Model | size: 4.00 x 3.00 x 1.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_panel_moss, FootprintD=1}
-bc_plant_monstera                   | Model | size: 2.00 x 4.50 x 2.00 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_plant_monstera, FootprintD=2}
-bc_sconce_leaf                      | Model | size: 1.00 x 2.00 x 1.00 {FootprintW=1, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_sconce_leaf, FootprintD=1}
-bc_shelf_arch                       | Model | size: 4.00 x 6.00 x 2.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_shelf_arch, FootprintD=2}
-bc_sofa_cane                        | Model | size: 6.00 x 3.12 x 3.00 {LookTagged=1, FootprintD=3, FootprintW=6, Kind=decor, PropV=1, Collection=Botanical Cafe, FxKit=1, SeatHeight=1.25, ItemId=bc_sofa_cane}
-bc_table_mosaic                     | Model | size: 3.00 x 2.42 x 3.00 {TableSeats=2, FootprintW=3, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_table_mosaic, FootprintD=3}
-bc_table_potting                    | Model | size: 4.00 x 3.35 x 2.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_table_potting, FootprintD=2}
-bc_table_terrarium                  | Model | size: 4.00 x 1.60 x 3.00 {TableSeats=0, FootprintW=4, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_table_terrarium, FootprintD=3}
-bc_tree_fig                         | Model | size: 2.04 x 7.00 x 2.00 {FootprintW=2, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_tree_fig, FootprintD=2}
-bc_vines_ceiling                    | Model | size: 4.00 x 2.50 x 4.00 {FootprintW=4, LookTagged=1, Kind=decor, Collection=Botanical Cafe, FxKit=1, ItemId=bc_vines_ceiling, FootprintD=4}
-bench_pink                          | Model | size: 6.00 x 3.40 x 3.00 {FootprintW=6, LookTagged=1, Kind=decor, ItemId=bench_pink, FootprintD=3}
-board_chalk                         | Model | size: 3.00 x 4.00 x 1.00 {FootprintW=3, LookTagged=1, Kind=decor, ItemId=board_chalk, FootprintD=1}
-bookcase                            | Model | size: 2.04 x 6.00 x 1.04 {FootprintW=2, LookTagged=1, Kind=decor, ItemId=bookcase, FootprintD=1}
-booth_bench_caramel                 | Model | size: 6.00 x 3.90 x 2.00 {ItemId=booth_bench_caramel, FootprintW=6, LookTagged=1, PropV=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, Kind=decor, SeatHeight=1.25, FootprintD=2}
-booth_bench_oak                     | Model | size: 4.00 x 3.90 x 2.00 {ItemId=booth_bench_oak, FootprintW=4, LookTagged=1, PropV=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, Kind=decor, SeatHeight=1.25, FootprintD=2}
-booth_bench_walnut                  | Model | size: 7.00 x 3.90 x 2.00 {ItemId=booth_bench_walnut, FootprintW=7, LookTagged=1, PropV=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, Kind=decor, SeatHeight=1.25, FootprintD=2}
-booth_corner                        | Model | size: 8.00 x 3.90 x 8.00 {LookTagged=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, FootprintD=8, FootprintW=8, TableSeats=3, PropV=1, Kind=decor, SeatHeight=1.25, ItemId=booth_corner}
-booth_corner_caramel                | Model | size: 2.00 x 3.90 x 2.00 {FootprintW=2, LookTagged=1, PropV=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, Kind=decor, ItemId=booth_corner_caramel, FootprintD=2}
-booth_duo                           | Model | size: 4.00 x 3.90 x 7.00 {LookTagged=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, FootprintD=7, FootprintW=4, TableSeats=2, PropV=1, Kind=decor, SeatHeight=1.25, ItemId=booth_duo}
-booth_four                          | Model | size: 7.00 x 3.90 x 7.00 {LookTagged=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, FootprintD=7, FootprintW=7, TableSeats=4, PropV=1, Kind=decor, SeatHeight=1.25, ItemId=booth_four}
-booth_table_caramel                 | Model | size: 6.00 x 2.40 x 4.00 {TableSeats=4, FootprintW=6, LookTagged=1, PropV=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, Kind=decor, ItemId=booth_table_caramel, FootprintD=4}
-booth_table_oak                     | Model | size: 3.00 x 2.40 x 3.00 {TableSeats=2, FootprintW=3, LookTagged=1, PropV=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, Kind=decor, ItemId=booth_table_oak, FootprintD=3}
-booth_table_walnut                  | Model | size: 6.00 x 2.40 x 3.00 {TableSeats=4, FootprintW=6, LookTagged=1, PropV=1, PropParams={"bz":0,"y0":2.5,"bx":0,"kind":"booth","k":0.625,"ax":1,"back":0.6,"az":1}, Kind=decor, ItemId=booth_table_walnut, FootprintD=3}
-box_station                         | Model | size: 4.00 x 5.00 x 2.00 {FootprintW=4, FixB2_flatlogo=true, LookTagged=1, Kind=decor, ItemId=box_station, FootprintD=2}
-box_tower                           | Model | size: 2.00 x 5.00 x 2.02 {FootprintW=2, LookTagged=1, Kind=decor, Ite
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 32)
+title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+title.Text = "Building..."
+title.TextColor3 = Color3.fromRGB(120, 220, 140)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 12
+title.ZIndex = 201
+title.Parent = f
+
+local copyBtn = Instance.new("TextButton")
+copyBtn.Size = UDim2.new(0, 70, 0, 26)
+copyBtn.Position = UDim2.new(1, -240, 0, 3)
+copyBtn.BackgroundColor3 = Color3.fromRGB(60, 120, 200)
+copyBtn.Text = "📋 Copy"
+copyBtn.TextColor3 = Color3.new(1, 1, 1)
+copyBtn.Font = Enum.Font.GothamBold
+copyBtn.TextSize = 11
+copyBtn.ZIndex = 202
+copyBtn.Parent = f
+
+local cbc = Instance.new("UICorner")
+cbc.CornerRadius = UDim.new(0, 6)
+cbc.Parent = copyBtn
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.new(0, 70, 0, 26)
+close.Position = UDim2.new(1, -76, 0, 3)
+close.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+close.Text = "CLOSE"
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Font = Enum.Font.GothamBold
+close.TextSize = 11
+close.ZIndex = 202
+close.Parent = f
+
+local cc = Instance.new("UICorner")
+cc.CornerRadius = UDim.new(0, 6)
+cc.Parent = close
+close.MouseButton1Click:Connect(function() sg:Destroy() end)
+
+local sf = Instance.new("ScrollingFrame")
+sf.Size = UDim2.new(1, -16, 1, -50)
+sf.Position = UDim2.new(0, 8, 0, 40)
+sf.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+sf.BorderSizePixel = 0
+sf.ScrollBarThickness = 6
+sf.CanvasSize = UDim2.new(0, 0, 0, 0)
+sf.ZIndex = 201
+sf.Parent = f
+
+local sfc = Instance.new("UICorner")
+sfc.CornerRadius = UDim.new(0, 6)
+sfc.Parent = sf
+
+local tb = Instance.new("TextBox")
+tb.Size = UDim2.new(1, -16, 0, 20000)
+tb.Position = UDim2.new(0, 8, 0, 8)
+tb.BackgroundTransparency = 1
+tb.Text = "Building..."
+tb.TextColor3 = Color3.fromRGB(220, 220, 230)
+tb.Font = Enum.Font.Code
+tb.TextSize = 11
+tb.TextXAlignment = Enum.TextXAlignment.Left
+tb.TextYAlignment = Enum.TextYAlignment.Top
+tb.MultiLine = true
+tb.TextEditable = true
+tb.ClearTextOnFocus = false
+tb.TextWrapped = false
+tb.ZIndex = 202
+tb.Parent = sf
+
+local ItemsFolder = RS:FindFirstChild("CookieStore")
+ItemsFolder = ItemsFolder and ItemsFolder:FindFirstChild("Assets")
+ItemsFolder = ItemsFolder and ItemsFolder:FindFirstChild("Items")
+
+if not ItemsFolder then
+    title.Text = "ERROR: Assets.Items not found"
+    return
+end
+
+local lines = {}
+local function add(s) table.insert(lines, s) end
+
+add("=== MY COOKIE STORE — SIMPLE CATALOG ===")
+add("Format: name | WxD | resize")
+add("W = width in squares, D = depth in squares")
+add("")
+
+-- Collect all attribute names to see what's available
+local attrFreq = {}
+local totalItems = #ItemsFolder:GetChildren()
+for _, item in ipairs(ItemsFolder:GetChildren()) do
+    for k, _ in pairs(item:GetAttributes()) do
+        attrFreq[k] = (attrFreq[k] or 0) + 1
+    end
+end
+
+-- Show attribute names so we can identify "resizable" field
+add("--- ATTRIBUTES FOUND ACROSS ALL ITEMS ---")
+local attrList = {}
+for k, count in pairs(attrFreq) do
+    table.insert(attrList, {name = k, count = count})
+end
+table.sort(attrList, function(a, b) return a.name:lower() < b.name:lower() end)
+for _, a in ipairs(attrList) do
+    add(string.format("  %-25s %d/%d items", a.name, a.count, totalItems))
+end
+add("")
+
+-- Resize detection - try common attribute names
+local RESIZE_NAMES = {
+    "Resizable", "Scalable", "CanResize", "CanScale", "Resize",
+    "Scale", "MaxScale", "GridScale", "FootprintMax", "MaxFootprint",
+    "Variants", "Variant", "PropV", "Sizes", "SizeOptions"
+}
+
+local function getResizeFlag(item)
+    for _, name in ipairs(RESIZE_NAMES) do
+        local v = item:GetAttribute(name)
+        if v ~= nil then
+            if type(v) == "boolean" then
+                return v and "yes" or "no"
+            elseif type(v) == "number" then
+                return "yes(" .. tostring(v) .. ")"
+            elseif type(v) == "string" then
+                return v
+            end
+        end
+    end
+    return "?"
+end
+
+-- Build item list
+add("--- ITEMS ---")
+local items = ItemsFolder:GetChildren()
+table.sort(items, function(a, b)
+    local an = (a:GetAttribute("ItemId") or a.Name):lower()
+    local bn = (b:GetAttribute("ItemId") or b.Name):lower()
+    return an < bn
+end)
+
+for _, item in ipairs(items) do
+    local name = item:GetAttribute("ItemId") or item.Name
+    local w = item:GetAttribute("FootprintW") or 1
+    local d = item:GetAttribute("FootprintD") or 1
+    local resize = getResizeFlag(item)
+    add(string.format("%-35s | %dx%d | %s", name, w, d, resize))
+end
+
+add("")
+add("Total: " .. totalItems .. " items")
+
+local text = table.concat(lines, "\n")
+local copied = false
+pcall(function() if setclipboard then setclipboard(text); copied = true end end)
+if not copied then pcall(function() if toclipboard then toclipboard(text); copied = true end end) end
+
+-- Also save to file
+if writefile then
+    pcall(writefile, "cookie_simple.txt", text)
+    pcall(writefile, "/storage/emulated/0/cookie_simple.txt", text)
+end
+
+title.Text = string.format("Done — %d items, %d chars %s",
+    totalItems, #text, copied and "(copied)" or "")
+
+copyBtn.MouseButton1Click:Connect(function()
+    local t = table.concat(lines, "\n")
+    pcall(function() if setclipboard then setclipboard(t) end end)
+    pcall(function() if toclipboard then toclipboard(t) end end)
+    copyBtn.Text = "✓ Copied"
+    task.wait(1.5)
+    copyBtn.Text = "📋 Copy"
+end)
