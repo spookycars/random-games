@@ -1,0 +1,39 @@
+-- Diagnostic: Find build item data in My Cookie Store
+local services = {
+    game:GetService("ReplicatedStorage"),
+    game:GetService("Workspace"),
+    game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui"),
+}
+
+local keywords = {"item", "build", "furniture", "decor", "place", "shop", "catalog", "cookie", "store", "grid", "tile"}
+
+print("=== SCANNING FOR BUILD ITEM CONTAINERS ===")
+
+for _, service in ipairs(services) do
+    if not service then continue end
+    for _, obj in ipairs(service:GetDescendants()) do
+        if obj:IsA("Folder") or obj:IsA("ModuleScript") or obj:IsA("Configuration") then
+            local nameLower = obj.Name:lower()
+            for _, kw in ipairs(keywords) do
+                if nameLower:find(kw) then
+                    print(string.format("[POTENTIAL] %s (%s) | Path: %s", obj.Name, obj.ClassName, obj:GetFullName()))
+                    -- Peek inside if it's a folder
+                    if obj:IsA("Folder") then
+                        local count = 0
+                        for _, child in ipairs(obj:GetChildren()) do
+                            count = count + 1
+                            if count <= 5 then
+                                print(string.format("   - Child: %s (%s)", child.Name, child.ClassName))
+                            end
+                        end
+                        if count > 5 then print(string.format("   ... and %d more", count - 5)) end
+                    end
+                    break
+                end
+            end
+        end
+    end
+end
+
+print("=== DIAGNOSTIC COMPLETE ===")
+print("Copy the output above and share it with me.")
