@@ -1,39 +1,224 @@
--- Diagnostic: Find build item data in My Cookie Store
-local services = {
-    game:GetService("ReplicatedStorage"),
-    game:GetService("Workspace"),
-    game:GetService("Players").LocalPlayer:FindFirstChild("PlayerGui"),
+-- My Cookie Store — Build Item Finder Diagnostic
+-- Shows UI on screen + copies full report to clipboard
+
+local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
+local WS = game:GetService("Workspace")
+local LP = Players.LocalPlayer
+local PG = LP:FindFirstChild("PlayerGui")
+
+local out = {}
+local function add(s) table.insert(out, tostring(s)) end
+
+add("=== MY COOKIE STORE — BUILD ITEM SCAN ===")
+add("PlaceId: " .. game.PlaceId)
+add("Game: " .. game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId).Name)
+add("")
+
+local keywords = {
+    "item", "build", "furniture", "decor", "place", "shop",
+    "catalog", "cookie", "store", "grid", "tile", "pixel", "block"
 }
 
-local keywords = {"item", "build", "furniture", "decor", "place", "shop", "catalog", "cookie", "store", "grid", "tile"}
+local function matchesKeyword(name)
+    local lower = name:lower()
+    for _, kw in ipairs(keywords) do
+        if lower:find(kw, 1, true) then return kw end
+    end
+    return nil
+end
 
-print("=== SCANNING FOR BUILD ITEM CONTAINERS ===")
+local found = {}
 
-for _, service in ipairs(services) do
-    if not service then continue end
-    for _, obj in ipairs(service:GetDescendants()) do
-        if obj:IsA("Folder") or obj:IsA("ModuleScript") or obj:IsA("Configuration") then
-            local nameLower = obj.Name:lower()
-            for _, kw in ipairs(keywords) do
-                if nameLower:find(kw) then
-                    print(string.format("[POTENTIAL] %s (%s) | Path: %s", obj.Name, obj.ClassName, obj:GetFullName()))
-                    -- Peek inside if it's a folder
-                    if obj:IsA("Folder") then
-                        local count = 0
-                        for _, child in ipairs(obj:GetChildren()) do
-                            count = count + 1
-                            if count <= 5 then
-                                print(string.format("   - Child: %s (%s)", child.Name, child.ClassName))
-                            end
-                        end
-                        if count > 5 then print(string.format("   ... and %d more", count - 5)) end
-                    end
-                    break
-                end
-            end
+-- Scan ReplicatedStorage
+add("=== REPLICATEDSTORAGE ===")
+for _, obj in ipairs(RS:GetDescendants()) do
+    if obj:IsA("Folder") or obj:IsA("Configuration") or obj:IsA("ModuleScript") then
+        local kw = matchesKeyword(obj.Name)
+        if kw then
+            local childCount = #obj:GetChildren()
+            add(string.format("[%s] %s | class=%s | children=%d | path=%s",
+                kw:upper(), obj.Name, obj.ClassName, childCount, obj:GetFullName()))
+            table.insert(found, obj)
         end
     end
 end
+add("")
 
-print("=== DIAGNOSTIC COMPLETE ===")
-print("Copy the output above and share it with me.")
+-- Scan Workspace (build plots often hold item models)
+add("=== WORKSPACE (top-level containers) ===")
+for _, obj in ipairs(WS:GetChildren()) do
+    if obj:IsA("Folder") or obj:IsA("Model") then
+        local kw = matchesKeyword(obj.Name)
+        if kw then
+            add(string.format("[%s] %s | class=%s | children=%d",
+                kw:upper(), obj.Name, obj.ClassName, #obj:GetChildren()))
+            table.insert(found, obj)
+        end
+    end
+end
+add("")
+
+-- Scan PlayerGui (build mode UI often holds item lists)
+add("=== PLAYERGUI ===")
+if PG then
+    for _, obj in ipairs(PG:GetDescendants()) do
+        local kw = matchesKeyword(obj.Name)
+        if kw and (obj:IsA("Frame") or obj:IsA("ScrollingFrame") or obj:IsA("Folder") or obj:IsA("ModuleScript")) then
+            add(string.format("[%s] %s | class=%s | children=%d | path=%s",
+                kw:upper(), obj.Name, obj.ClassName, #obj:GetChildren(), obj:GetFullName()))
+            table.insert(found, obj)
+        end
+    end
+end
+add("")
+
+-- Look for RemoteEvents/Functions related to building
+add("=== BUILD-RELATED REMOTES ===")
+for _, obj in ipairs(RS:GetDescendants()) do
+    if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+        local kw = matchesKeyword(obj.Name)
+        if kw then
+            add(string.format("[%s] %s | class=%s | path=%s",
+                kw:upper(), obj.Name, obj.ClassName, obj:GetFullName()))
+        end
+    end
+end
+add("")
+
+-- Inspect the most promising folder (most children with keyword match)
+local best = nil
+local bestCount = 0
+for _, obj in ipairs(found) do
+    local c = #obj:GetChildren()
+    if c > bestCount and c < 500 then
+        best = obj
+        bestCount = c
+    end
+end
+
+if best then
+    add("=== LIKELY ITEM CONTAINER: " .. best:GetFullName() .. " ===")
+    add("Children (" .. bestCount .. "):")
+    local shown = 0
+    for _, child in ipairs(best:GetChildren()) do
+        shown = shown + 1
+        if shown > 20 then
+            add("  ... and " .. (bestCount - 20) .. " more")
+            break
+        end
+        local extra = ""
+        if child:IsA("Model") then
+            local part = child.PrimaryPart or child:FindFirstChildWhichIsA("BasePart")
+            if part then
+                extra = string.format(" [Part size: %.2f x %.2f x %.2f]", part.Size.X, part.Size.Y, part.Size.Z)
+            end
+        end
+        -- attributes
+        local attrs = child:GetAttributes()
+        local attrStr = ""
+        for k, v in pairs(attrs) do
+            attrStr = attrStr .. " " .. k .. "=" .. tostring(v)
+        end
+        add(string.format("  %s (%s)%s%s", child.Name, child.ClassName, extra, attrStr ~= "" and (" {attrs:" .. attrStr .. "}") or ""))
+    end
+else
+    add("=== NO LIKELY CONTAINER FOUND ===")
+    add("Try re-running while in build mode with the item shop open.")
+end
+
+add("")
+add("=== END ===")
+
+local text = table.concat(out, "\n")
+
+-- Copy to clipboard
+local copied = false
+pcall(function() if setclipboard then setclipboard(text); copied = true end end)
+if not copied then pcall(function() if toclipboard then toclipboard(text); copied = true end end) end
+
+-- On-screen viewer
+if PG then
+    pcall(function()
+        local old = PG:FindFirstChild("CookieDiag")
+        if old then old:Destroy() end
+
+        local sg = Instance.new("ScreenGui")
+        sg.Name = "CookieDiag"
+        sg.ResetOnSpawn = false
+        sg.Parent = PG
+
+        local f = Instance.new("Frame")
+        f.Size = UDim2.new(1, -20, 1, -20)
+        f.Position = UDim2.new(0, 10, 0, 10)
+        f.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+        f.BorderSizePixel = 0
+        f.ZIndex = 200
+        f.Parent = sg
+
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 8)
+        c.Parent = f
+
+        local title = Instance.new("TextLabel")
+        title.Size = UDim2.new(1, 0, 0, 32)
+        title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+        title.Text = "My Cookie Store — Scan Result (tap box to select)"
+        title.TextColor3 = Color3.fromRGB(255, 200, 80)
+        title.Font = Enum.Font.GothamBold
+        title.TextSize = 12
+        title.ZIndex = 201
+        title.Parent = f
+
+        local close = Instance.new("TextButton")
+        close.Size = UDim2.new(0, 70, 0, 26)
+        close.Position = UDim2.new(1, -76, 0, 3)
+        close.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+        close.Text = "CLOSE"
+        close.TextColor3 = Color3.new(1, 1, 1)
+        close.Font = Enum.Font.GothamBold
+        close.TextSize = 11
+        close.ZIndex = 202
+        close.Parent = f
+
+        local cc = Instance.new("UICorner")
+        cc.CornerRadius = UDim.new(0, 6)
+        cc.Parent = close
+
+        local sf = Instance.new("ScrollingFrame")
+        sf.Size = UDim2.new(1, -16, 1, -50)
+        sf.Position = UDim2.new(0, 8, 0, 40)
+        sf.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+        sf.BorderSizePixel = 0
+        sf.ScrollBarThickness = 6
+        sf.CanvasSize = UDim2.new(0, 0, 0, #out * 18 + 30)
+        sf.ZIndex = 201
+        sf.Parent = f
+
+        local sfc = Instance.new("UICorner")
+        sfc.CornerRadius = UDim.new(0, 6)
+        sfc.Parent = sf
+
+        local tb = Instance.new("TextBox")
+        tb.Size = UDim2.new(1, -16, 0, #out * 18 + 30)
+        tb.Position = UDim2.new(0, 8, 0, 8)
+        tb.BackgroundTransparency = 1
+        tb.Text = text
+        tb.TextColor3 = Color3.fromRGB(220, 220, 230)
+        tb.Font = Enum.Font.Code
+        tb.TextSize = 11
+        tb.TextXAlignment = Enum.TextXAlignment.Left
+        tb.TextYAlignment = Enum.TextYAlignment.Top
+        tb.MultiLine = true
+        tb.TextEditable = true
+        tb.ClearTextOnFocus = false
+        tb.TextWrapped = true
+        tb.ZIndex = 202
+        tb.Parent = sf
+
+        close.MouseButton1Click:Connect(function() sg:Destroy() end)
+    end)
+end
+
+print(text)
+print("--- Clipboard: " .. (copied and "OK" or "FAILED") .. " ---")
