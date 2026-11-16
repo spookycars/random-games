@@ -1,25 +1,16 @@
--- Sharp Triggerbot Diagnostic
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local UIS = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
 local LP = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
 local PG = LP:FindFirstChild("PlayerGui")
-
-if not PG then return end
-
-local m_GameCharacterController = require(RS.Client.Controllers.GameCharacterController)
 local m_BackpackClient = require(RS.Client.Madwork.BackpackClient)
 
--- ============ UI ============
-local old = PG:FindFirstChild("TrigDiag")
+if not PG then return end
+local old = PG:FindFirstChild("StateTest")
 if old then old:Destroy() end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "TrigDiag"
-sg.ResetOnSpawn = false
-sg.Parent = PG
+sg.Name = "StateTest"; sg.ResetOnSpawn = false; sg.Parent = PG
 
 local f = Instance.new("Frame")
 f.Size = UDim2.new(1, -20, 1, -20)
@@ -27,18 +18,16 @@ f.Position = UDim2.new(0, 10, 0, 10)
 f.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
 f.BorderSizePixel = 0
 f.Parent = sg
-
 local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 8); c.Parent = f
 
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 32)
 title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-title.Text = "🎯 Triggerbot Diagnostic"
+title.Text = "🔪 FSM State Tester"
 title.TextColor3 = Color3.fromRGB(255, 100, 100)
 title.Font = Enum.Font.GothamBold
 title.TextSize = 14
 title.Parent = f
-local tc = Instance.new("UICorner"); tc.CornerRadius = UDim.new(0, 8); tc.Parent = title
 
 local close = Instance.new("TextButton")
 close.Size = UDim2.new(0, 70, 0, 26)
@@ -49,25 +38,23 @@ close.TextColor3 = Color3.new(1, 1, 1)
 close.Font = Enum.Font.GothamBold
 close.TextSize = 11
 close.Parent = f
-local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(0, 6); cc.Parent = close
 close.Activated:Connect(function() sg:Destroy() end)
 
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, -16, 0, 28)
-status.Position = UDim2.new(0, 8, 0, 38)
-status.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
-status.BorderSizePixel = 0
-status.Text = "Scanning..."
-status.TextColor3 = Color3.fromRGB(255, 200, 80)
-status.Font = Enum.Font.GothamBold
-status.TextSize = 12
-status.TextXAlignment = Enum.TextXAlignment.Left
-status.Parent = f
-local stc = Instance.new("UICorner"); stc.CornerRadius = UDim.new(0, 4); stc.Parent = status
+local stateLbl = Instance.new("TextLabel")
+stateLbl.Size = UDim2.new(1, -16, 0, 30)
+stateLbl.Position = UDim2.new(0, 8, 0, 38)
+stateLbl.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+stateLbl.BorderSizePixel = 0
+stateLbl.Text = "Live state: ?"
+stateLbl.TextColor3 = Color3.fromRGB(180, 220, 255)
+stateLbl.Font = Enum.Font.GothamBold
+stateLbl.TextSize = 13
+stateLbl.TextXAlignment = Enum.TextXAlignment.Left
+stateLbl.Parent = f
 
 local sf = Instance.new("ScrollingFrame")
-sf.Size = UDim2.new(1, -16, 1, -220)
-sf.Position = UDim2.new(0, 8, 0, 72)
+sf.Size = UDim2.new(1, -16, 1, -160)
+sf.Position = UDim2.new(0, 8, 0, 74)
 sf.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
 sf.BorderSizePixel = 0
 sf.ScrollBarThickness = 5
@@ -93,209 +80,131 @@ logBox.TextWrapped = true
 logBox.AutomaticSize = Enum.AutomaticSize.Y
 logBox.Parent = sf
 
--- buttons
-local function mkBtn(text, x, w, y, color, cb)
+local logLines = {}
+local function addLog(t)
+    table.insert(logLines, t)
+    logBox.Text = table.concat(logLines, "\n")
+end
+
+local function copyAll()
+    local t = table.concat(logLines, "\n")
+    pcall(function() if setclipboard then setclipboard(t) end end)
+    pcall(function() if toclipboard then toclipboard(t) end end)
+end
+
+local function getEquippedKnife()
+    local upvals = getupvalues(m_BackpackClient.GetToolById)
+    for _, v in pairs(upvals) do
+        if type(v) == "table" then
+            for _, tool in pairs(v) do
+                if type(tool) == "table" and tool.Store and tool.Store.FSM then
+                    if tool.Setup and type(tool.Setup.ToolBehaviour) == "string"
+                       and tool.Setup.ToolBehaviour:lower():find("knife", 1, true) then
+                        return tool
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Live state display
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        local tool = getEquippedKnife()
+        if tool and tool.Store.FSM then
+            stateLbl.Text = "Live state: " .. tostring(tool.Store.FSM.State)
+                .. " | Equipped: " .. tostring(tool.Equipped)
+        else
+            stateLbl.Text = "Live state: (no knife found)"
+        end
+    end
+end)
+
+local function mkBtn(text, y, color, cb)
     local b = Instance.new("TextButton")
-    b.Size = UDim2.new(w, -4, 0, 40)
-    b.Position = UDim2.new(x, 4, 1, y)
+    b.Size = UDim2.new(1, -16, 0, 36)
+    b.Position = UDim2.new(0, 8, 1, y)
     b.BackgroundColor3 = color
     b.Text = text
     b.TextColor3 = Color3.new(1, 1, 1)
     b.Font = Enum.Font.GothamBold
-    b.TextSize = 11
-    b.TextWrapped = true
+    b.TextSize = 12
     b.Parent = f
     local bc = Instance.new("UICorner"); bc.CornerRadius = UDim.new(0, 6); bc.Parent = b
     b.Activated:Connect(cb)
     return b
 end
 
-local logLines = {}
-local function addLog(text)
-    table.insert(logLines, text)
-    logBox.Text = table.concat(logLines, "\n")
-end
-
-local function copyAll()
-    local text = table.concat(logLines, "\n")
-    pcall(function() if setclipboard then setclipboard(text) end end)
-    pcall(function() if toclipboard then toclipboard(text) end end)
-end
-
--- ============ DISCOVER TOOLS ============
-local function GetAllTools()
-    local tools = {}
-    local upvals = getupvalues(m_BackpackClient.GetToolById)
-    for _, v in pairs(upvals) do
-        if type(v) == "table" then
-            for _, tool in pairs(v) do
-                if type(tool) == "table" and tool.Store then
-                    table.insert(tools, tool)
-                end
-            end
-        end
-    end
-    return tools
-end
-
-local function TryFire()
-    local fired = {}
-    for _, tool in ipairs(GetAllTools()) do
-        if tool.Equipped and tool.Store and tool.Store.FSM then
-            local fsm = tool.Store.FSM
-            local behaviour = tool.Setup and tool.Setup.ToolBehaviour or "?"
-            local state = tostring(fsm.State or "?")
-            local ok, err = pcall(function()
-                if type(fsm.Set) == "function" then fsm:Set("Throw")
-                elseif type(fsm.ForceSetState) == "function" then fsm:ForceSetState("Throw")
-                elseif type(fsm.HandleEvent) == "function" then fsm:HandleEvent("Throw")
-                end
-            end)
-            table.insert(fired, string.format("%s (state=%s) → %s", behaviour, state, ok and "OK" or tostring(err)))
-        end
-    end
-    return fired
-end
-
--- ============ HEAD SCANNER ============
-local CROSSHAIR_RADIUS = 60
-
-local function ScanHeads()
-    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    local lines = {}
-    local passCount = 0
-    local total = 0
-
-    for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
-        if gameChar.Player == LP then continue end
-        local rel = "?"
-        pcall(function() rel = gameChar.GamePlayer:GetLocalRelationship() end)
-
-        local char = gameChar.Character
-        local alive = char and char.IsAlive
-        local model = char and char.Model
-        local head = model and model:FindFirstChild("Head")
-
-        total = total + 1
-
-        if not head then
-            -- Try to find any part on the model
-            local foundPart = nil
-            if model then
-                for _, d in ipairs(model:GetChildren()) do
-                    if d:IsA("BasePart") then foundPart = d break end
-                end
-            end
-            table.insert(lines, string.format(
-                "%s | %s | NO HEAD%s",
-                gameChar.Player.Name, rel,
-                foundPart and (" (first part: " .. foundPart.Name .. ")") or ""
-            ))
-            continue
-        end
-
-        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-        if not onScreen then
-            table.insert(lines, string.format(
-                "%s | %s | head OFFSCREEN (pos %.0f,%.0f,%.0f)",
-                gameChar.Player.Name, rel,
-                head.Position.X, head.Position.Y, head.Position.Z
-            ))
-            continue
-        end
-
-        local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-        local within = dist <= CROSSHAIR_RADIUS
-        if within and rel == "Enemy" and alive then passCount = passCount + 1 end
-
-        table.insert(lines, string.format(
-            "%s | %s | %s | screen(%.0f,%.0f) | center-dist %.0f%s",
-            gameChar.Player.Name,
-            rel,
-            alive and "alive" or "dead",
-            screenPos.X, screenPos.Y,
-            dist,
-            within and " ✓ IN RADIUS" or ""
-        ))
-    end
-
-    return lines, passCount, total, center
-end
-
--- ============ LIVE UPDATE ============
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        pcall(function()
-            local lines, pass, total, center = ScanHeads()
-            logLines = {}
-            table.insert(logLines, string.format(
-                "=== TRIGGERBOT DIAGNOSTIC ===\nViewport: %dx%d | Center: (%.0f,%.0f) | Radius: %dpx\nEnemies: %d | In crosshair: %d\n",
-                Camera.ViewportSize.X, Camera.ViewportSize.Y,
-                center.X, center.Y,
-                CROSSHAIR_RADIUS,
-                total, pass
-            ))
-            for _, line in ipairs(lines) do
-                table.insert(logLines, line)
-            end
-            logBox.Text = table.concat(logLines, "\n")
-            if pass > 0 then
-                status.Text = string.format("🟢 %d enemy head(s) in crosshair — triggerbot SHOULD fire", pass)
-                status.TextColor3 = Color3.fromRGB(120, 220, 140)
-            else
-                status.Text = string.format("🔴 0 in crosshair — aimbot not locked or head off center (%d tracked)", total)
-                status.TextColor3 = Color3.fromRGB(220, 100, 100)
-            end
-        end)
-    end
-end)
-
--- ============ BUTTONS ============
-mkBtn("Force\nFire", 0, 0.33, -48, Color3.fromRGB(60, 120, 200), function()
-    local result = TryFire()
+-- LIST STATES
+mkBtn("📋 List all FSM states", -104, Color3.fromRGB(60, 120, 200), function()
+    local tool = getEquippedKnife()
+    if not tool then addLog("❌ No knife"); return end
+    local fsm = tool.Store.FSM
     addLog("")
-    addLog("=== FORCE FIRE ===")
-    if #result == 0 then
-        addLog("❌ No equipped tools with FSM found")
+    addLog("=== FSM STATE LIST ===")
+    addLog("Current: " .. tostring(fsm.State))
+    if fsm._states then
+        local names = {}
+        for k in pairs(fsm._states) do table.insert(names, tostring(k)) end
+        table.sort(names)
+        for _, n in ipairs(names) do
+            addLog("  • " .. n)
+        end
     else
-        for _, r in ipairs(result) do addLog(r) end
-    end
-    status.Text = "Force fire: " .. (#result == 0 and "no tool" or "sent " .. #result .. " call(s)")
-    copyAll()
-end)
-
-mkBtn("Dump\nStructure", 0.33, 0.33, -48, Color3.fromRGB(150, 60, 150), function()
-    addLog("")
-    addLog("=== GAMECHAR STRUCTURE ===")
-    local count = 0
-    for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
-        count = count + 1
-        if count > 2 then break end
-        addLog("Player: " .. tostring(gameChar.Player and gameChar.Player.Name))
-        pcall(function()
-            local rel = gameChar.GamePlayer:GetLocalRelationship()
-            addLog("  Relationship: " .. tostring(rel))
-        end)
-        addLog("  Char.IsAlive: " .. tostring(gameChar.Character and gameChar.Character.IsAlive))
-        if gameChar.Character and gameChar.Character.Model then
-            addLog("  Model: " .. gameChar.Character.Model.Name)
-            for _, child in ipairs(gameChar.Character.Model:GetChildren()) do
-                if child:IsA("BasePart") then
-                    addLog("    " .. child.Name .. " (" .. child.ClassName .. ")")
-                end
-            end
+        addLog("  (no _states table)")
+        -- Try metatable
+        local mt = getmetatable(fsm)
+        if mt then
+            for k in pairs(mt) do addLog("  mt." .. tostring(k)) end
         end
-        addLog("")
     end
-    status.Text = "Structure dumped — see log"
     copyAll()
 end)
 
-mkBtn("Copy\nLog", 0.66, 0.34, -48, Color3.fromRGB(70, 130, 90), function()
+-- TRY A SINGLE STATE + VERIFY
+local function tryState(name)
+    local tool = getEquippedKnife()
+    if not tool then addLog("❌ No knife"); return end
+    local fsm = tool.Store.FSM
+    local before = tostring(fsm.State)
+    local ok, err = pcall(function()
+        if type(fsm.Set) == "function" then fsm:Set(name)
+        elseif type(fsm.ForceSetState) == "function" then fsm:ForceSetState(name)
+        elseif type(fsm.HandleEvent) == "function" then fsm:HandleEvent(name) end
+    end)
+    task.wait(0.3)
+    local after = tostring(fsm.State)
+    local changed = before ~= after
+    addLog(string.format("Set('%s') | %s → %s | %s",
+        name, before, after,
+        not ok and ("ERR: " .. tostring(err))
+        or changed and "✓ STATE CHANGED"
+        or "✗ state unchanged"))
     copyAll()
-    status.Text = "✓ Copied to clipboard"
-    status.TextColor3 = Color3.fromRGB(120, 220, 140)
+end
+
+-- TRY RELEASE
+mkBtn("🔓 Try Set('Release')", -64, Color3.fromRGB(80, 160, 100), function()
+    tryState("Release")
 end)
 
-print("[TrigDiag] Loaded. Live scanner running.")
+-- CYCLE THROUGH CANDIDATES
+mkBtn("🔄 Cycle through all candidates", -24, Color3.fromRGB(150, 60, 150), function()
+    local candidates = {
+        "Release", "Uncharge", "Fire", "Throw", "Shoot",
+        "Attack", "Loose", "Launch", "Stab", "Swing",
+        "Charge", "ChargeStart", "ChargeEnd", "Cancel",
+        "Finish", "Complete", "Execute", "Unleash",
+    }
+    addLog("")
+    addLog("=== CYCLE TEST ===")
+    for _, name in ipairs(candidates) do
+        tryState(name)
+        task.wait(0.6)
+    end
+end)
+
+print("[StateTest] Loaded")
