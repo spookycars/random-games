@@ -1,35 +1,255 @@
--- Sharp Anti-Cheat Trigger Finder
+-- Sharp Anti-Cheat Trigger Finder — Clipboard + On-Screen Edition
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local PG = LocalPlayer:FindFirstChild("PlayerGui")
 
-print("[Finder] Kick trigger detector loaded. Waiting for a kick attempt...")
+if not PG then warn("No PlayerGui") return end
 
--- Hook the __namecall metamethod to intercept all method calls
-local mt = getrawmetatable(game)
-local oldNamecall = mt.__namecall
-setreadonly(mt, false)
+-- ---------- UTILS ----------
+local function copyText(text)
+    local ok = false
+    pcall(function() if setclipboard then setclipboard(text); ok = true end end)
+    if not ok then pcall(function() if toclipboard then toclipboard(text); ok = true end end) end
+    if not ok then pcall(function() if writefile then writefile("kick_trace.txt", text); ok = "file" end end) end
+    return ok
+end
 
-mt.__namecall = newcclosure(function(self, ...)
-    local method = getnamecallmethod()
-    
-    -- Check if the method name contains "kick" (case-insensitive)
-    if typeof(method) == "string" and method:lower():find("kick") then
-        print("========================================")
-        print("[Finder] KICK ATTEMPT DETECTED!")
-        print("Method Name: " .. method)
-        print("Target Instance: " .. tostring(self))
-        
-        -- This is the most important part: the stack trace
-        print("--- STACK TRACE ---")
-        local trace = debug.traceback()
-        print(trace)
-        print("========================================")
-        
-        -- Block the kick by returning nil instead of calling the original function
-        return nil 
+local function clearUI()
+    local old = PG:FindFirstChild("KickFinder")
+    if old then old:Destroy() end
+end
+
+-- ---------- UI ----------
+local sg, tb, titleBar, statusLabel
+
+local function buildUI()
+    clearUI()
+
+    sg = Instance.new("ScreenGui")
+    sg.Name = "KickFinder"
+    sg.ResetOnSpawn = false
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.Parent = PG
+
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, -20, 1, -20)
+    f.Position = UDim2.new(0, 10, 0, 10)
+    f.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
+    f.BorderSizePixel = 0
+    f.Active = true
+    f.Draggable = true
+    f.ZIndex = 300
+    f.Parent = sg
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 8)
+    c.Parent = f
+
+    titleBar = Instance.new("TextLabel")
+    titleBar.Size = UDim2.new(1, 0, 0, 32)
+    titleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+    titleBar.Text = "🕵 Anti-Cheat Finder — ARMED"
+    titleBar.TextColor3 = Color3.fromRGB(255, 200, 80)
+    titleBar.Font = Enum.Font.GothamBold
+    titleBar.TextSize = 12
+    titleBar.ZIndex = 301
+    titleBar.Parent = f
+
+    local tc = Instance.new("UICorner")
+    tc.CornerRadius = UDim.new(0, 8)
+    tc.Parent = titleBar
+
+    local copyBtn = Instance.new("TextButton")
+    copyBtn.Size = UDim2.new(0, 65, 0, 26)
+    copyBtn.Position = UDim2.new(1, -140, 0, 3)
+    copyBtn.BackgroundColor3 = Color3.fromRGB(60, 120, 200)
+    copyBtn.Text = "📋 Copy"
+    copyBtn.TextColor3 = Color3.new(1, 1, 1)
+    copyBtn.Font = Enum.Font.GothamBold
+    copyBtn.TextSize = 11
+    copyBtn.ZIndex = 302
+    copyBtn.Parent = f
+
+    local cbc = Instance.new("UICorner")
+    cbc.CornerRadius = UDim.new(0, 6)
+    cbc.Parent = copyBtn
+
+    local closeBtn = Instance.new("TextButton")
+    closeBtn.Size = UDim2.new(0, 65, 0, 26)
+    closeBtn.Position = UDim2.new(1, -71, 0, 3)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+    closeBtn.Text = "CLOSE"
+    closeBtn.TextColor3 = Color3.new(1, 1, 1)
+    closeBtn.Font = Enum.Font.GothamBold
+    closeBtn.TextSize = 11
+    closeBtn.ZIndex = 302
+    closeBtn.Parent = f
+
+    local cc = Instance.new("UICorner")
+    cc.CornerRadius = UDim.new(0, 6)
+    cc.Parent = closeBtn
+
+    statusLabel = Instance.new("TextLabel")
+    statusLabel.Size = UDim2.new(1, -16, 0, 24)
+    statusLabel.Position = UDim2.new(0, 8, 0, 38)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Text = "Waiting for kick attempt... (do the thing that gets you kicked)"
+    statusLabel.TextColor3 = Color3.fromRGB(160, 160, 170)
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.TextSize = 11
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.ZIndex = 301
+    statusLabel.Parent = f
+
+    local sf = Instance.new("ScrollingFrame")
+    sf.Size = UDim2.new(1, -16, 1, -76)
+    sf.Position = UDim2.new(0, 8, 0, 66)
+    sf.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+    sf.BorderSizePixel = 0
+    sf.ScrollBarThickness = 6
+    sf.CanvasSize = UDim2.new(0, 0, 0, 0)
+    sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    sf.ZIndex = 301
+    sf.Parent = f
+
+    local sfc = Instance.new("UICorner")
+    sfc.CornerRadius = UDim.new(0, 6)
+    sfc.Parent = sf
+
+    tb = Instance.new("TextBox")
+    tb.Size = UDim2.new(1, -16, 0, 0)
+    tb.Position = UDim2.new(0, 8, 0, 8)
+    tb.BackgroundTransparency = 1
+    tb.Text = "Script armed. Perform the action that triggers the kick.\n\nCaptured events will appear here AND be copied to your clipboard."
+    tb.TextColor3 = Color3.fromRGB(220, 220, 230)
+    tb.Font = Enum.Font.Code
+    tb.TextSize = 10
+    tb.TextXAlignment = Enum.TextXAlignment.Left
+    tb.TextYAlignment = Enum.TextYAlignment.Top
+    tb.MultiLine = true
+    tb.TextEditable = true
+    tb.ClearTextOnFocus = false
+    tb.TextWrapped = true
+    tb.AutomaticSize = Enum.AutomaticSize.Y
+    tb.ZIndex = 302
+    tb.Parent = sf
+
+    closeBtn.MouseButton1Click:Connect(function()
+        sg:Destroy()
+    end)
+
+    copyBtn.MouseButton1Click:Connect(function()
+        local ok = copyText(tb.Text)
+        copyBtn.Text = ok and "✓ Copied" or "✗ Failed"
+        task.wait(1.5)
+        copyBtn.Text = "📋 Copy"
+    end)
+end
+
+-- ---------- CAPTURE LOGIC ----------
+local captured = {}
+local capturedCount = 0
+
+local function recordEvent(methodName, target, extra)
+    capturedCount = capturedCount + 1
+    local trace = debug.traceback("", 2)
+    local timeStr = "?"
+    pcall(function() timeStr = tostring(os.time()) end)
+    if timeStr == "?" then pcall(function() timeStr = tostring(math.floor(tick())) end) end
+
+    local entry = string.format(
+        "══════ CAPTURE #%d ══════\n" ..
+        "Method: %s\n" ..
+        "Target: %s\n" ..
+        "Time: %s\n" ..
+        "Extra: %s\n\n" ..
+        "STACK TRACE:\n%s\n",
+        capturedCount, tostring(methodName), tostring(target), timeStr,
+        tostring(extra or "none"), trace
+    )
+    table.insert(captured, entry)
+
+    local fullText = table.concat(captured, "\n")
+    local copied = copyText(fullText)
+
+    if tb then
+        tb.Text = fullText
+        statusLabel.Text = string.format("⚠ CAPTURE #%d (%s) | %s",
+            capturedCount, tostring(methodName),
+            copied and "copied to clipboard" or "COPY MANUALLY")
+        statusLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+        titleBar.Text = "🕵 Anti-Cheat Finder — CAPTURED #" .. capturedCount
+        titleBar.TextColor3 = Color3.fromRGB(255, 100, 100)
     end
-    
-    return oldNamecall(self, ...)
+end
+
+buildUI()
+
+-- ---------- HOOK 1: __namecall (method calls) ----------
+local hooked = false
+local hookErr = nil
+
+pcall(function()
+    local mt = getrawmetatable(game)
+    if not mt then error("no metatable") end
+    local oldNamecall = mt.__namecall
+    if not oldNamecall then error("no __namecall") end
+
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        if typeof(method) == "string" then
+            local lower = method:lower()
+            if lower:find("kick", 1, true) or lower:find("ban", 1, true) then
+                local args = {...}
+                recordEvent(method, self, #args > 0 and tostring(args[1]) or "")
+                return nil -- block the kick
+            end
+        end
+        return oldNamecall(self, ...)
+    end)
+    setreadonly(mt, true)
+    hooked = true
 end)
 
-setreadonly(mt, true)
+if not hooked then
+    if tb then
+        tb.Text = "❌ Could not hook __namecall\n\n" .. tostring(hookErr) ..
+            "\n\nYour executor may block metatable hooks. Kick cannot be intercepted."
+    end
+    return
+end
+
+-- ---------- HOOK 2: Watch known kick remotes ----------
+-- Some games use a RemoteEvent named something specific
+pcall(function()
+    local RS = game:GetService("ReplicatedStorage")
+    local keywords = {"kick", "ban", "detect", "flag", "cheat", "exploit"}
+    for _, obj in ipairs(RS:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            local nameLower = obj.Name:lower()
+            for _, kw in ipairs(keywords) do
+                if nameLower:find(kw, 1, true) then
+                    -- Note remote names that could be kick-related
+                    if tb then
+                        local cur = tb.Text
+                        tb.Text = cur .. "\n[NOTE] Suspicious remote found: " .. obj:GetFullName()
+                    end
+                    break
+                end
+            end
+        end
+    end
+end)
+
+-- ---------- HOOK 3: Override Player.Kick directly ----------
+-- Some scripts call LocalPlayer:Kick() directly on a specific player instance
+pcall(function()
+    local oldKick = LocalPlayer.Kick
+    if oldKick then
+        -- Cannot override a method on an instance, but namecall intercepts it
+        -- This is just for logging
+    end
+end)
+
+print("[KickFinder] Loaded. UI on screen. Clipboard ready. Hooks active.")
