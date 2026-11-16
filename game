@@ -11,29 +11,18 @@ local PG = LocalPlayer:WaitForChild("PlayerGui")
 
 -- ===================== SETTINGS =====================
 local settings = {
-    silentAim = false,
-    triggerBot = false,
-    autoShoot = false,
-    maxCharge = false,
-    infiniteAmmo = false,
-    espEnabled = false,
-    espEnemyOnly = false,
-    espTeamOnly = false,
-    espNames = true,
-    espDistance = true,
-    espHealth = true,
-    espChams = false,
+    silentAim = false, triggerBot = false, autoShoot = false,
+    maxCharge = false, infiniteAmmo = false,
+    espEnabled = false, espEnemyOnly = false, espTeamOnly = false,
+    espNames = true, espDistance = true, espHealth = true, espChams = false,
     espMaxDistance = 1000,
     espEnemyColor = Color3.fromRGB(255, 50, 50),
     espTeamColor = Color3.fromRGB(50, 255, 50),
-    targetHighlight = false,
-    knifeTracers = false,
+    targetHighlight = false, knifeTracers = false,
     knifeTracerColor = Color3.fromRGB(255, 200, 0),
-    aimbot = {
-        enabled = false, wallCheck = false, teamCheck = false,
-        targetPart = "Head", fov = 200, maxDistance = 1000,
-        smoothness = 1, prioritizeClosest = false, wallCheckPrecision = 3,
-    },
+    aimbot = { enabled = false, wallCheck = false, teamCheck = false,
+               targetPart = "Head", fov = 200, maxDistance = 1000,
+               smoothness = 1, prioritizeClosest = false, wallCheckPrecision = 3 },
 }
 
 -- ===================== MODULES =====================
@@ -137,9 +126,8 @@ end
 -- DEBUG STATE
 local debugInfo = {
     toolsFound = 0, equippedTools = 0, knifeEquipped = false,
-    knifeState = "?", fsmMethod = "?", lastError = "none",
-    fireSuccess = 0, lastThrowTime = 0,
-    relationship = "?", localAlive = false,
+    knifeState = "?", fsmMethods = "?", lastError = "none",
+    fireSuccess = 0, localAlive = false,
 }
 
 local function UpdateDebug()
@@ -147,10 +135,7 @@ local function UpdateDebug()
     debugInfo.equippedTools = 0
     debugInfo.knifeEquipped = false
     debugInfo.knifeState = "?"
-    debugInfo.fsmMethod = "?"
-    debugInfo.relationship = "?"
-    debugInfo.localAlive = false
-
+    debugInfo.fsmMethods = "?"
     local localChar = LocalPlayer.Character
     local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
     debugInfo.localAlive = localHum ~= nil and localHum.Health > 0
@@ -165,11 +150,13 @@ local function UpdateDebug()
                 local fsm = tool.Store and tool.Store.FSM
                 if fsm then
                     debugInfo.knifeState = tostring(fsm.State)
-                    if type(fsm.Set) == "function" then debugInfo.fsmMethod = "Set"
-                    elseif type(fsm.SetState) == "function" then debugInfo.fsmMethod = "SetState"
-                    elseif type(fsm.ChangeState) == "function" then debugInfo.fsmMethod = "ChangeState"
-                    elseif type(fsm.ForceSetState) == "function" then debugInfo.fsmMethod = "ForceSetState"
-                    else debugInfo.fsmMethod = "none" end
+                    local methods = {}
+                    if type(fsm.Set) == "function" then table.insert(methods, "Set") end
+                    if type(fsm.SetState) == "function" then table.insert(methods, "SetState") end
+                    if type(fsm.ChangeState) == "function" then table.insert(methods, "ChangeState") end
+                    if type(fsm.ForceSetState) == "function" then table.insert(methods, "ForceSetState") end
+                    if type(fsm.HandleEvent) == "function" then table.insert(methods, "HandleEvent") end
+                    debugInfo.fsmMethods = #methods > 0 and table.concat(methods, ", ") or "none"
                 end
             end
         end
@@ -183,11 +170,10 @@ task.spawn(function()
     end
 end)
 
--- Permissive fireable state check
+-- Robust fire attempt
 local FIREABLE_STATES = {
     idle = true, ready = true, neutral = true, rest = true,
-    holstered = true, equipped = true, throw = true,
-    fire = true, attack = true,
+    holstered = true, equipped = true, throw = true, fire = true, attack = true,
 }
 
 local function IsFireable(fsm)
@@ -203,22 +189,24 @@ local function TryFire()
             local fsm = tool.Store.FSM
             if IsFireable(fsm) then
                 local ok, err = pcall(function()
-                    if type(fsm.Set) == "function" then
+                    -- Priority: ForceSetState > HandleEvent > standard Set
+                    if type(fsm.ForceSetState) == "function" then
+                        fsm:ForceSetState("Throw")
+                    elseif type(fsm.HandleEvent) == "function" then
+                        fsm:HandleEvent("Throw")
+                    elseif type(fsm.Set) == "function" then
                         fsm:Set("Throw")
                     elseif type(fsm.SetState) == "function" then
                         fsm:SetState("Throw")
                     elseif type(fsm.ChangeState) == "function" then
                         fsm:ChangeState("Throw")
-                    elseif type(fsm.ForceSetState) == "function" then
-                        fsm:ForceSetState("Throw")
                     else
-                        error("No transition method on FSM")
+                        error("No suitable FSM transition method")
                     end
                 end)
                 if ok then
                     fired = fired + 1
                     debugInfo.fireSuccess = debugInfo.fireSuccess + 1
-                    debugInfo.lastThrowTime = tick()
                 else
                     debugInfo.lastError = tostring(err)
                 end
@@ -341,21 +329,16 @@ local function GetCharColor(gameChar)
     return rel == "Enemy" and settings.espEnemyColor or settings.espTeamColor
 end
 
--- FIX: Distance check skipped when local player is dead
 local function ShouldShowESP(gameChar)
     if not settings.espEnabled then return false end
-
     local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
     if ok and rel then
         if settings.espEnemyOnly and rel ~= "Enemy" then return false end
         if settings.espTeamOnly and rel ~= "Friendly" then return false end
     end
-
-    -- Only apply distance filter when local player is alive and positioned
     local localChar = LocalPlayer.Character
     local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
     local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
-
     if localHum and localHum.Health > 0 and localRoot then
         local enemyRoot = gameChar.Character and gameChar.Character.RootPart
         if enemyRoot then
@@ -396,7 +379,6 @@ end
 for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do CreateESPForChar(gameChar) end
 m_GameCharacterController.GameCharacterAdded:Connect(CreateESPForChar)
 
--- FIX: periodic re-sync so dead/respawned GameChars are handled
 task.spawn(function()
     while true do
         task.wait(1)
@@ -478,9 +460,7 @@ RunService.Heartbeat:Connect(function()
         end
         local parts = {}
         if settings.espNames then table.insert(parts, gameChar.Player.Name) end
-        if settings.espDistance then
-            table.insert(parts, localAlive and (dist .. "m") or "?m")
-        end
+        if settings.espDistance then table.insert(parts, localAlive and (dist .. "m") or "?m") end
         if settings.espHealth then table.insert(parts, math.floor(hp) .. "/" .. math.floor(hpMax) .. "hp") end
         esp.label.Text = table.concat(parts, " | ")
         esp.label.TextColor3 = color
@@ -512,8 +492,8 @@ function Library.new()
     pcall(function() self.ScreenGui.Parent = game:GetService("CoreGui") end)
     if not self.ScreenGui.Parent then self.ScreenGui.Parent = PG end
     self.Main = Instance.new("Frame")
-    self.Main.Size = UDim2.new(0, 520, 0, 520)
-    self.Main.Position = UDim2.new(0.5, -260, 0.5, -260)
+    self.Main.Size = UDim2.new(0, 520, 0, 540)
+    self.Main.Position = UDim2.new(0.5, -260, 0.5, -270)
     self.Main.BackgroundColor3 = Color3.fromRGB(18,18,24)
     self.Main.BorderSizePixel = 0; self.Main.Active = true
     self.Main.Draggable = true; self.Main.Parent = self.ScreenGui
@@ -772,7 +752,7 @@ UI:CreateButton(combatTab, "Throw At Target Now", function() TryFire() end)
 
 UI:CreateSection(combatTab, "Combat Debug")
 local debugLabel = Instance.new("TextLabel")
-debugLabel.Size = UDim2.new(1, -10, 0, 130)
+debugLabel.Size = UDim2.new(1, -10, 0, 150)
 debugLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
 debugLabel.BorderSizePixel = 0
 debugLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
@@ -788,12 +768,12 @@ task.spawn(function()
     while true do
         task.wait(0.2)
         local t = {}
-        table.insert(t, "Local player alive: " .. tostring(debugInfo.localAlive))
+        table.insert(t, "Local alive: " .. tostring(debugInfo.localAlive))
         table.insert(t, "Tools found: " .. tostring(debugInfo.toolsFound))
         table.insert(t, "Equipped: " .. tostring(debugInfo.equippedTools))
         table.insert(t, "Knife equipped: " .. tostring(debugInfo.knifeEquipped))
         table.insert(t, "Knife FSM state: " .. tostring(debugInfo.knifeState))
-        table.insert(t, "FSM method: " .. tostring(debugInfo.fsmMethod))
+        table.insert(t, "FSM methods: " .. tostring(debugInfo.fsmMethods))
         table.insert(t, "Fire successes: " .. tostring(debugInfo.fireSuccess))
         table.insert(t, "Last error: " .. tostring(debugInfo.lastError))
         debugLabel.Text = table.concat(t, "\n")
@@ -829,4 +809,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — ESP death fix + permissive autoshoot states.")
+print("[SHARP] Loaded — ForceSetState/HandleEvent fire attempts enabled.")
