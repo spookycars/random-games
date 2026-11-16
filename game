@@ -9,6 +9,9 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 local PG = LocalPlayer:WaitForChild("PlayerGui")
 
+-- ===================== SHARED STATE =====================
+local targetLocked = nil
+
 -- ===================== SETTINGS =====================
 local settings = {
     silentAim = false,
@@ -159,9 +162,19 @@ local function ResolveWeaponType(tool)
     return nil
 end
 
--- ============ FIRE LOGIC ============
-local KNIFE_STATES = { idle = true, ready = true, neutral = true, rest = true, throw = true, fire = true }
-local GUN_STATES = { idle = true, ready = true, neutral = true, fire = true, shoot = true, attack = true }
+-- ============ FIRE LOGIC (expanded states) ============
+local KNIFE_STATES = {
+    idle = true, ready = true, neutral = true, rest = true,
+    throw = true, fire = true, attack = true, swing = true,
+    equipped = true, holstered = true, active = true, cooldown = true,
+}
+local GUN_STATES = {
+    idle = true, ready = true, neutral = true, fire = true,
+    shoot = true, attack = true, armed = true, equipped = true,
+    holstered = true, active = true,
+}
+local KNIFE_ACTIONS = {"Throw", "Attack", "Swing", "Slash", "Stab"}
+local GUN_ACTIONS = {"Fire", "Shoot", "Attack", "Blast", "Trigger"}
 
 local function FsmSet(fsm, stateName)
     if type(fsm.Set) == "function" then return fsm:Set(stateName) end
@@ -169,15 +182,16 @@ local function FsmSet(fsm, stateName)
     if type(fsm.HandleEvent) == "function" then return fsm:HandleEvent(stateName) end
     if type(fsm.SetState) == "function" then return fsm:SetState(stateName) end
     if type(fsm.ChangeState) == "function" then return fsm:ChangeState(stateName) end
-    error("No FSM transition method")
+    return nil
 end
 
 local function FireKnife(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or ""):lower()
-    if KNIFE_STATES[state] then
-        return pcall(FsmSet, fsm, "Throw")
+    if not KNIFE_STATES[state] then return false end
+    for _, action in ipairs(KNIFE_ACTIONS) do
+        if pcall(FsmSet, fsm, action) then return true end
     end
     return false
 end
@@ -189,7 +203,7 @@ local function FireGun(tool)
 
     if state == "reload" then
         if settings.autoReload then
-            local ok = pcall(FsmSet, fsm, "Fire")
+            local ok = pcall(FsmSet, fsm, "Fire") or pcall(FsmSet, fsm, "Shoot")
             if ok then
                 pcall(FsmSet, fsm, "Idle")
                 pcall(FsmSet, fsm, "Fire")
@@ -199,12 +213,9 @@ local function FireGun(tool)
         return false
     end
 
-    if GUN_STATES[state] then
-        local ok = pcall(FsmSet, fsm, "Fire")
-        if ok then return true end
-        for _, alt in ipairs({"Shoot", "Attack"}) do
-            if pcall(FsmSet, fsm, alt) then return true end
-        end
+    if not GUN_STATES[state] then return false end
+    for _, action in ipairs(GUN_ACTIONS) do
+        if pcall(FsmSet, fsm, action) then return true end
     end
     return false
 end
@@ -220,24 +231,32 @@ local function TryFire()
 end
 
 -- ============ TRIGGERBOT CHECKS ============
+-- Crosshair mode: any enemy head within 60px of screen center. No raycast,
+-- no wall check. If aimbot snapped to head, it fires that frame.
+local CROSSHAIR_RADIUS = 60
+
 local function IsCrosshairOnEnemy()
-    local origin = Camera.CFrame.Position
-    local direction = Camera.CFrame.LookVector * 1000
-    local params = RaycastParams.new()
-    params.FilterDescendantsInstances = {LocalPlayer.Character}
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    local result = workspace:Raycast(origin, direction, params)
-    if not result then return false end
-    local hitPart = result.Instance
+    local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         if gameChar.Player == LocalPlayer then continue end
         if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
         local char = gameChar.Character
-        if char and char.IsAlive and char.Model and hitPart:IsDescendantOf(char.Model) then
-            return true
+        if char and char.IsAlive and char.Model then
+            local head = char.Model:FindFirstChild("Head")
+            if head then
+                local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+                    if dist <= CROSSHAIR_RADIUS then return true end
+                end
+            end
         end
     end
     return false
+end
+
+local function IsAimbotLocked()
+    return settings.aimbot.enabled and targetLocked ~= nil
 end
 
 -- ============ TRIGGERBOT LOOP ============
@@ -249,7 +268,7 @@ task.spawn(function()
             if settings.triggerBotMode == "Crosshair" then
                 shouldFire = IsCrosshairOnEnemy()
             elseif settings.triggerBotMode == "Aimbot" then
-                shouldFire = targetLocked ~= nil
+                shouldFire = IsAimbotLocked()
             else
                 local head = GetClosestHead()
                 shouldFire = head ~= nil and IsVisible(head)
@@ -267,8 +286,6 @@ task.spawn(function()
 end)
 
 -- ===================== AIMBOT =====================
-local targetLocked = nil
-
 local function aimbotIsVisible(targetPart, targetModel)
     if not settings.aimbot.wallCheck or not targetModel then return true end
     local origin = Camera.CFrame.Position
@@ -666,7 +683,6 @@ function Library:CreateTab(name)
     padding.PaddingBottom = UDim.new(0, 12)
     padding.Parent = page
 
-    -- Explicit canvas size so mobile scrolling always works
     local function updateCanvas()
         page.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 24)
     end
@@ -1027,4 +1043,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — debug removed, scroll fixed.")
+print("[SHARP] Loaded — triggerbot scope fixed, crosshair check is viewport-based.")
