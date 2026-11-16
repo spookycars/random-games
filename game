@@ -11,7 +11,6 @@ local PG = LocalPlayer:WaitForChild("PlayerGui")
 
 local targetLocked = nil
 
--- ===================== SETTINGS =====================
 local settings = {
     silentAim = false,
     triggerBot = false,
@@ -38,18 +37,14 @@ local settings = {
         targetPart = "Head", fov = 200, maxDistance = 1000,
         smoothness = 1, prioritizeClosest = false, wallCheckPrecision = 3,
     },
-    knifeThrowCooldown = 0.8,
-    crosshairRadius = 40,
 }
 
--- ===================== MODULES =====================
 local m_GameCharacterController = require(ReplicatedStorage.Client.Controllers.GameCharacterController)
 local m_CombatClient = require(ReplicatedStorage.Client.Madwork.CombatClient)
 local m_BackpackClient = require(ReplicatedStorage.Client.Madwork.BackpackClient)
 local m_ToolUsageClient = require(ReplicatedStorage.Client.Madwork.ToolUsageClient)
 local m_MadworkCaster = require(ReplicatedStorage.Shared.Madwork.MadworkCaster)
 
--- ===================== SHARP LOGIC =====================
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -148,63 +143,51 @@ local function ResolveWeaponType(tool)
     return nil
 end
 
--- ============ FIRE LOGIC (charge-aware + cooldown) ============
--- Sharp knife states: Charge, ChargeHold, Equip, Fire, Idle, Preview, Throw
--- Correct throw path: ChargeHold → Fire → (auto) → Charge → Throw
--- ForceSetState("Throw") skips charge and produces a 0-power throw
--- Cooldown prevents the 50ms spam loop
+-- ============ FIRE LOGIC — charge-aware, no artificial cooldown ============
+-- Sharp knife FSM: Charge / ChargeHold / Equip / Fire / Idle / Preview / Throw
+-- Sequence: ChargeHold --Set(Fire)--> Fire --(auto)--> Charge --Set(Throw)--> Throw
+-- The FSM's own animation durations act as the natural rate limiter
+-- No tick() cooldown needed — the state machine handles pacing
 
-local lastThrowTime = 0
-local lastGunTime = 0
-
-local function TryFsm(fsm, stateName)
-    if type(fsm.ForceSetState) == "function" then
-        local ok = pcall(fsm.ForceSetState, fsm, stateName)
-        if ok then return true end
-    end
-    if type(fsm.Set) == "function" then
-        local ok = pcall(fsm.Set, fsm, stateName)
-        if ok then return true end
-    end
-    if type(fsm.HandleEvent) == "function" then
-        local ok = pcall(fsm.HandleEvent, fsm, stateName)
-        if ok then return true end
-    end
-    return false
-end
+local lastKnifeThrowAt = 0
 
 local function FireKnife(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or "")
 
-    if state == "Throw" or state == "Equip" or state == "Preview" then return false end
-    if tick() - lastThrowTime < settings.knifeThrowCooldown then return false end
-
-    if state == "ChargeHold" then
-        pcall(function()
-            if type(fsm.Set) == "function" then fsm:Set("Fire") end
-        end)
-        lastThrowTime = tick()
-        return true
+    -- Skip states where the FSM is busy
+    if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then
+        return false
     end
 
-    if state == "Fire" then return false end
+    if state == "ChargeHold" then
+        -- Begin the release sequence — Fire will auto-transition to Charge
+        if type(fsm.Set) == "function" then
+            local ok = pcall(fsm.Set, fsm, "Fire")
+            if ok then return true end
+        end
+        return false
+    end
 
     if state == "Charge" then
-        pcall(function()
-            if type(fsm.ForceSetState) == "function" then
-                fsm:ForceSetState("Throw")
-            elseif type(fsm.Set) == "function" then
-                fsm:Set("Throw")
-            end
-        end)
-        lastThrowTime = tick()
-        return true
+        -- Fully charged, throw now
+        local ok = false
+        if type(fsm.ForceSetState) == "function" then
+            ok = pcall(fsm.ForceSetState, fsm, "Throw")
+        elseif type(fsm.Set) == "function" then
+            ok = pcall(fsm.Set, fsm, "Throw")
+        end
+        return ok
     end
 
     return false
 end
+
+local GUN_VALID = {
+    Fire = true, Idle = true, Reload = true,
+    Equip = true, Preview = true,
+}
 
 local function FireGun(tool)
     local fsm = tool.Store.FSM
@@ -212,19 +195,20 @@ local function FireGun(tool)
     local state = tostring(fsm.State or "")
 
     if state == "Reload" then
-        if settings.autoReload then
-            pcall(function()
-                if type(fsm.Set) == "function" then fsm:Set("Idle") end
-            end)
+        if settings.autoReload and type(fsm.Set) == "function" then
+            pcall(fsm.Set, fsm, "Idle")
             return true
         end
         return false
     end
 
     if state == "Fire" or state == "Throw" then return false end
-    if tick() - lastGunTime < 0.15 then return false end
-    lastGunTime = tick()
-    return TryFsm(fsm, "Fire")
+    if not GUN_VALID[state] then return false end
+
+    if type(fsm.Set) == "function" then
+        return pcall(fsm.Set, fsm, "Fire")
+    end
+    return false
 end
 
 local function TryFire()
@@ -237,22 +221,41 @@ local function TryFire()
     end
 end
 
--- ============ TRIGGERBOT CHECKS ============
+-- ============ CROSSHAIR CHECK with WALL RAYCAST ============
+local CROSSHAIR_RADIUS = 60
+
 local function IsCrosshairOnEnemy()
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local localChar = LocalPlayer.Character
+    if not localChar then return false end
+
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         if gameChar.Player == LocalPlayer then continue end
         if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
         local char = gameChar.Character
-        if char and char.IsAlive and char.Model then
-            local head = char.Model:FindFirstChild("Head")
-            if head then
-                local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-                if onScreen then
-                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-                    if dist <= settings.crosshairRadius then return true end
-                end
-            end
+        if not char or not char.IsAlive or not char.Model then continue end
+        local head = char.Model:FindFirstChild("Head")
+        if not head then continue end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+        if not onScreen then continue end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+        if dist > CROSSHAIR_RADIUS then continue end
+
+        -- WALL CHECK: raycast from camera to head, excluding own char + target
+        local origin = Camera.CFrame.Position
+        local direction = head.Position - origin
+        local params = RaycastParams.new()
+        params.FilterDescendantsInstances = {localChar, char.Model}
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.IgnoreWater = true
+        local result = workspace:Raycast(origin, direction, params)
+
+        -- If raycast returns nil, nothing between us and the target → clear shot
+        -- If raycast returns something, it's a wall → blocked
+        if result == nil then
+            return true
         end
     end
     return false
@@ -994,18 +997,11 @@ local combatTab = UI:CreateTab("Combat")
 local aimbotTab = UI:CreateTab("Aimbot")
 local visualTab = UI:CreateTab("Visuals")
 
--- COMBAT
 UI:CreateSection(combatTab, "Fire Mode")
 UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot = v end)
 UI:CreateDropdown(combatTab, "Triggerbot Mode",
     {"Crosshair", "Aimbot", "Proximity"}, "Crosshair",
     function(opt) settings.triggerBotMode = opt end)
-UI:CreateSlider(combatTab, "Crosshair Radius (px)", 10, 200, 40, function(v)
-    settings.crosshairRadius = v
-end)
-UI:CreateSlider(combatTab, "Knife Cooldown (÷100 s)", 30, 300, 80, function(v)
-    settings.knifeThrowCooldown = v / 100
-end)
 UI:CreateToggle(combatTab, "Auto Shoot (blind spam)", false, function(v) settings.autoShoot = v end)
 UI:CreateToggle(combatTab, "Auto Reload", true, function(v) settings.autoReload = v end)
 
@@ -1015,7 +1011,6 @@ UI:CreateToggle(combatTab, "Max Charge", false, function(v) settings.maxCharge =
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
--- AIMBOT
 UI:CreateSection(aimbotTab, "Aimbot")
 UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
 UI:CreateToggle(aimbotTab, "Wall Check", false, function(v) settings.aimbot.wallCheck = v end)
@@ -1029,7 +1024,6 @@ UI:CreateSlider(aimbotTab, "Max Distance", 50, 2000, 1000, function(v) settings.
 UI:CreateSlider(aimbotTab, "Smoothness (÷100)", 1, 100, 100, function(v) settings.aimbot.smoothness = v / 100 end)
 UI:CreateSlider(aimbotTab, "Wall Check Precision", 1, 10, 3, function(v) settings.aimbot.wallCheckPrecision = v end)
 
--- VISUALS
 UI:CreateSection(visualTab, "ESP")
 UI:CreateToggle(visualTab, "Enable ESP", false, function(v) settings.espEnabled = v end)
 UI:CreateToggle(visualTab, "Enemy Only", false, function(v) settings.espEnemyOnly = v; if v then settings.espTeamOnly = false end end)
@@ -1048,4 +1042,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — charge-aware knife fire with cooldown.")
+print("[SHARP] Loaded — wall check on crosshair, natural FSM pacing.")
