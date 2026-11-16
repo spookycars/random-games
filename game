@@ -9,104 +9,15 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 local PG = LocalPlayer:WaitForChild("PlayerGui")
 
--- ===================== SETTINGS =====================
-local settings = {
-    silentAim = false, triggerBot = false, autoShoot = false,
-    maxCharge = false, infiniteAmmo = false,
-    espEnabled = false, espEnemyOnly = false, espTeamOnly = false,
-    espNames = true, espDistance = true, espHealth = true, espChams = false,
-    espMaxDistance = 1000,
-    espEnemyColor = Color3.fromRGB(255, 50, 50),
-    espTeamColor = Color3.fromRGB(50, 255, 50),
-    targetHighlight = false, knifeTracers = false,
-    knifeTracerColor = Color3.fromRGB(255, 200, 0),
-    aimbot = { enabled = false, wallCheck = false, teamCheck = false,
-               targetPart = "Head", fov = 200, maxDistance = 1000,
-               smoothness = 1, prioritizeClosest = false, wallCheckPrecision = 3 },
-}
-
--- ===================== MODULES =====================
-local m_GameCharacterController = require(ReplicatedStorage.Client.Controllers.GameCharacterController)
-local m_CombatClient = require(ReplicatedStorage.Client.Madwork.CombatClient)
 local m_BackpackClient = require(ReplicatedStorage.Client.Madwork.BackpackClient)
 local m_ToolUsageClient = require(ReplicatedStorage.Client.Madwork.ToolUsageClient)
-local m_MadworkCaster = require(ReplicatedStorage.Shared.Madwork.MadworkCaster)
-
--- ===================== SHARP LOGIC =====================
-local rayParams = RaycastParams.new()
-rayParams.FilterType = Enum.RaycastFilterType.Exclude
-
-local function IsVisible(head)
-    local localChar = LocalPlayer.Character
-    if not localChar then return false end
-    local rootPart = localChar:FindFirstChild("HumanoidRootPart")
-    if not rootPart then return false end
-    rayParams.FilterDescendantsInstances = {localChar}
-    local result = workspace:Raycast(rootPart.Position, head.Position - rootPart.Position, rayParams)
-    if result then return result.Instance:IsDescendantOf(head.Parent) end
-    return false
-end
-
-local function GetClosestHead()
-    local mousePos = UserInputService:GetMouseLocation()
-    local closest, closestDist, closestPlayer, closestGameChar = nil, 200, nil, nil
-    for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
-        if gameChar.Player == LocalPlayer then continue end
-        if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
-        local char = gameChar.Character
-        if not char or not char.IsAlive then continue end
-        local model = char.Model
-        local head = model:FindFirstChild("Head")
-        local humanoid = model:FindFirstChild("Humanoid")
-        if head and humanoid and humanoid.Health > 0 then
-            local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-                if dist < closestDist then
-                    closestDist = dist; closest = head
-                    closestPlayer = gameChar.Player; closestGameChar = gameChar
-                end
-            end
-        end
-    end
-    return closest, closestPlayer, closestGameChar
-end
-
-m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
-    if not settings.silentAim and not settings.maxCharge then return end
-    if settings.maxCharge then combatEvent.GameAction.Charge = 1 end
-    if settings.silentAim then
-        local head = GetClosestHead()
-        if head then
-            local throwPos = combatEvent.GameAction.Position
-            combatEvent.GameAction.Direction = (head.Position - throwPos).Unit
-        end
-    end
-end)
-
-local useClipHooked = false
-local function HookUseClip()
-    if useClipHooked then return end
-    local upvalues = getupvalues(m_ToolUsageClient.NewToolUsage)
-    for i, v in pairs(upvalues) do
-        if type(v) == "table" and v.UseClip ~= nil then
-            local original_UseClip = v.UseClip
-            v.UseClip = function(self)
-                if settings.infiniteAmmo then self.Clip = self.Clip + 1 end
-                return original_UseClip(self)
-            end
-            useClipHooked = true; break
-        end
-    end
-end
-HookUseClip()
 
 local function GetAllTools()
     local tools = {}
     local upvals = getupvalues(m_BackpackClient.GetToolById)
-    for i, v in pairs(upvals) do
+    for _, v in pairs(upvals) do
         if type(v) == "table" then
-            for id, tool in pairs(v) do
+            for _, tool in pairs(v) do
                 if type(tool) == "table" and tool.Store then
                     table.insert(tools, tool)
                 end
@@ -118,695 +29,242 @@ end
 
 local function IsKnifeTool(tool)
     if not tool.Setup then return false end
-    local behaviour = tool.Setup.ToolBehaviour
-    if type(behaviour) ~= "string" then return false end
-    return behaviour:lower():find("knife", 1, true) ~= nil
+    local b = tool.Setup.ToolBehaviour
+    return type(b) == "string" and b:lower():find("knife", 1, true) ~= nil
 end
 
--- DEBUG STATE
-local debugInfo = {
-    toolsFound = 0, equippedTools = 0, knifeEquipped = false,
-    knifeState = "?", fsmMethods = "?", lastError = "none",
-    fireSuccess = 0, localAlive = false,
-}
+-- ============ UI ============
+local sg = Instance.new("ScreenGui")
+sg.Name = "KnifeTest"
+sg.ResetOnSpawn = false
+sg.Parent = PG
 
-local function UpdateDebug()
-    debugInfo.toolsFound = 0
-    debugInfo.equippedTools = 0
-    debugInfo.knifeEquipped = false
-    debugInfo.knifeState = "?"
-    debugInfo.fsmMethods = "?"
-    local localChar = LocalPlayer.Character
-    local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
-    debugInfo.localAlive = localHum ~= nil and localHum.Health > 0
+local f = Instance.new("Frame")
+f.Size = UDim2.new(0, 340, 0, 460)
+f.Position = UDim2.new(0.5, -170, 0.5, -230)
+f.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+f.BorderSizePixel = 0
+f.Active = true
+f.Draggable = true
+f.Parent = sg
 
-    local tools = GetAllTools()
-    debugInfo.toolsFound = #tools
-    for _, tool in ipairs(tools) do
-        if tool.Equipped then
-            debugInfo.equippedTools = debugInfo.equippedTools + 1
-            if IsKnifeTool(tool) then
-                debugInfo.knifeEquipped = true
-                local fsm = tool.Store and tool.Store.FSM
-                if fsm then
-                    debugInfo.knifeState = tostring(fsm.State)
-                    local methods = {}
-                    if type(fsm.Set) == "function" then table.insert(methods, "Set") end
-                    if type(fsm.SetState) == "function" then table.insert(methods, "SetState") end
-                    if type(fsm.ChangeState) == "function" then table.insert(methods, "ChangeState") end
-                    if type(fsm.ForceSetState) == "function" then table.insert(methods, "ForceSetState") end
-                    if type(fsm.HandleEvent) == "function" then table.insert(methods, "HandleEvent") end
-                    debugInfo.fsmMethods = #methods > 0 and table.concat(methods, ", ") or "none"
-                end
-            end
-        end
-    end
-end
+local c = Instance.new("UICorner")
+c.CornerRadius = UDim.new(0, 10)
+c.Parent = f
 
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        pcall(UpdateDebug)
-    end
-end)
+local s = Instance.new("UIStroke")
+s.Color = Color3.fromRGB(200, 60, 60)
+s.Thickness = 1.5
+s.Parent = f
 
--- Robust fire attempt
-local FIREABLE_STATES = {
-    idle = true, ready = true, neutral = true, rest = true,
-    holstered = true, equipped = true, throw = true, fire = true, attack = true,
-}
+local t = Instance.new("TextLabel")
+t.Size = UDim2.new(1, 0, 0, 36)
+t.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+t.Text = "🔪 Knife Fire Test"
+t.TextColor3 = Color3.fromRGB(255, 100, 100)
+t.Font = Enum.Font.GothamBold
+t.TextSize = 14
+t.Parent = f
+local tc = Instance.new("UICorner")
+tc.CornerRadius = UDim.new(0, 10)
+tc.Parent = t
 
-local function IsFireable(fsm)
-    if not fsm then return false end
-    local state = tostring(fsm.State or ""):lower()
-    return FIREABLE_STATES[state] == true
-end
-
-local function TryFire()
-    local fired = 0
-    for _, tool in ipairs(GetAllTools()) do
-        if tool.Equipped and tool.Store and tool.Store.FSM and IsKnifeTool(tool) then
-            local fsm = tool.Store.FSM
-            if IsFireable(fsm) then
-                local ok, err = pcall(function()
-                    -- Priority: ForceSetState > HandleEvent > standard Set
-                    if type(fsm.ForceSetState) == "function" then
-                        fsm:ForceSetState("Throw")
-                    elseif type(fsm.HandleEvent) == "function" then
-                        fsm:HandleEvent("Throw")
-                    elseif type(fsm.Set) == "function" then
-                        fsm:Set("Throw")
-                    elseif type(fsm.SetState) == "function" then
-                        fsm:SetState("Throw")
-                    elseif type(fsm.ChangeState) == "function" then
-                        fsm:ChangeState("Throw")
-                    else
-                        error("No suitable FSM transition method")
-                    end
-                end)
-                if ok then
-                    fired = fired + 1
-                    debugInfo.fireSuccess = debugInfo.fireSuccess + 1
-                else
-                    debugInfo.lastError = tostring(err)
-                end
-            else
-                debugInfo.lastError = "State not fireable: " .. tostring(fsm.State)
-            end
-        end
-    end
-    return fired
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.05)
-        if settings.triggerBot then
-            local head = GetClosestHead()
-            if head and IsVisible(head) then TryFire() end
-        end
-    end
-end)
-
-task.spawn(function()
-    while true do
-        task.wait(0.05)
-        if settings.autoShoot then TryFire() end
-    end
-end)
-
--- ===================== AIMBOT =====================
-local targetLocked = nil
-
-local function aimbotIsVisible(targetPart, targetModel)
-    if not settings.aimbot.wallCheck or not targetModel then return true end
-    local origin = Camera.CFrame.Position
-    local direction = (targetPart.Position - origin).Unit
-    local distance = (targetPart.Position - origin).Magnitude
-    local params = RaycastParams.new()
-    params.FilterDescendantsInstances = {LocalPlayer.Character, targetModel}
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.IgnoreWater = true
-    for i = 1, settings.aimbot.wallCheckPrecision do
-        local offset = Vector3.new(math.random(-30,30)/100, math.random(-30,30)/100, math.random(-30,30)/100)
-        local result = workspace:Raycast(origin + offset, direction * distance, params)
-        if result and not result.Instance:IsDescendantOf(targetModel) then return false end
-    end
-    return true
-end
-
-local function getAimbotPart(model)
-    local partName = settings.aimbot.targetPart
-    if partName == "Torso" then
-        return model:FindFirstChild("Torso") or model:FindFirstChild("UpperTorso") or model:FindFirstChild("LowerTorso")
-    end
-    return model:FindFirstChild(partName)
-end
-
-local function aimbotValidTarget(gameChar)
-    if gameChar.Player == LocalPlayer then return false end
-    if settings.aimbot.teamCheck and gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then return false end
-    local char = gameChar.Character
-    if not char or not char.IsAlive then return false end
-    local model = char.Model
-    if not model then return false end
-    local part = getAimbotPart(model)
-    if not part then return false end
-    return true, char, part
-end
-
-local function aimbotFindTarget()
-    local viewportCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    local localChar = LocalPlayer.Character
-    if not localChar then return nil end
-    local localRoot = localChar:FindFirstChild("HumanoidRootPart")
-    if not localRoot then return nil end
-    local best, bestScore = nil, math.huge
-    for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
-        local valid, char, part = aimbotValidTarget(gameChar)
-        if valid then
-            local dist = (part.Position - localRoot.Position).Magnitude
-            if dist <= settings.aimbot.maxDistance and aimbotIsVisible(part, char.Model) then
-                local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
-                if onScreen then
-                    local fovDist = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
-                    if fovDist <= settings.aimbot.fov then
-                        local score = settings.aimbot.prioritizeClosest and dist or fovDist
-                        if score < bestScore then bestScore = score; best = gameChar end
-                    end
-                end
-            end
-        end
-    end
-    return best
-end
-
-local function aimbotUpdate()
-    if not settings.aimbot.enabled then targetLocked = nil; return end
-    if targetLocked then
-        local valid, char, part = aimbotValidTarget(targetLocked)
-        if not valid or not aimbotIsVisible(part, char.Model) then targetLocked = nil end
-    end
-    if not targetLocked then targetLocked = aimbotFindTarget() end
-    if targetLocked then
-        local valid, char, part = aimbotValidTarget(targetLocked)
-        if valid and part then
-            local currentCF = Camera.CFrame
-            local newCF = CFrame.new(currentCF.Position, part.Position)
-            Camera.CFrame = currentCF:Lerp(newCF, math.clamp(settings.aimbot.smoothness, 0.01, 1))
-        end
-    end
-end
-
-RunService.RenderStepped:Connect(aimbotUpdate)
-Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
-
--- ===================== ESP =====================
-local espObjects = {}
-
-local function GetCharColor(gameChar)
-    local rel = gameChar.GamePlayer:GetLocalRelationship()
-    return rel == "Enemy" and settings.espEnemyColor or settings.espTeamColor
-end
-
-local function ShouldShowESP(gameChar)
-    if not settings.espEnabled then return false end
-    local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
-    if ok and rel then
-        if settings.espEnemyOnly and rel ~= "Enemy" then return false end
-        if settings.espTeamOnly and rel ~= "Friendly" then return false end
-    end
-    local localChar = LocalPlayer.Character
-    local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
-    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
-    if localHum and localHum.Health > 0 and localRoot then
-        local enemyRoot = gameChar.Character and gameChar.Character.RootPart
-        if enemyRoot then
-            local dist = (enemyRoot.Position - localRoot.Position).Magnitude
-            if dist > settings.espMaxDistance then return false end
-        end
-    end
-    return true
-end
-
-local function CreateESPForChar(gameChar)
-    if gameChar.Player == LocalPlayer then return end
-    if espObjects[gameChar] then return end
-    local billboard = Instance.new("BillboardGui")
-    billboard.Name = "SharpESP"; billboard.Size = UDim2.new(0, 220, 0, 36)
-    billboard.StudsOffset = Vector3.new(0, 2.5, 0); billboard.AlwaysOnTop = true
-    billboard.MaxDistance = math.huge; billboard.Enabled = false; billboard.Parent = PG
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, 0, 1, 0); label.BackgroundTransparency = 1
-    label.TextStrokeTransparency = 0; label.Font = Enum.Font.GothamBold
-    label.TextSize = 14; label.TextColor3 = Color3.new(1,1,1); label.Text = ""
-    label.Parent = billboard
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "SharpChams"; highlight.FillTransparency = 0.5
-    highlight.OutlineColor = Color3.new(1,1,1); highlight.OutlineTransparency = 0
-    highlight.Enabled = false; highlight.Parent = PG
-    espObjects[gameChar] = { billboard = billboard, label = label, highlight = highlight, lastModel = nil }
-end
-
-local function RemoveESPForChar(gameChar)
-    local esp = espObjects[gameChar]
-    if not esp then return end
-    if esp.billboard then esp.billboard:Destroy() end
-    if esp.highlight then esp.highlight:Destroy() end
-    espObjects[gameChar] = nil
-end
-
-for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do CreateESPForChar(gameChar) end
-m_GameCharacterController.GameCharacterAdded:Connect(CreateESPForChar)
-
-task.spawn(function()
-    while true do
-        task.wait(1)
-        pcall(function()
-            local current = m_GameCharacterController.GetGameCharacters()
-            local currentSet = {}
-            for _, gc in ipairs(current) do currentSet[gc] = true end
-            for gc in pairs(espObjects) do
-                if not currentSet[gc] then RemoveESPForChar(gc) end
-            end
-            for _, gc in ipairs(current) do
-                if not espObjects[gc] then CreateESPForChar(gc) end
-            end
-        end)
-    end
-end)
-
-local currentHighlight, lastTarget = nil, nil
-local function ClearHighlight()
-    if currentHighlight then currentHighlight:Destroy(); currentHighlight = nil end
-    lastTarget = nil
-end
-local function ApplyHighlight(model)
-    if lastTarget == model then return end
-    ClearHighlight()
-    local h = Instance.new("Highlight")
-    h.FillColor = Color3.fromRGB(255,50,50); h.OutlineColor = Color3.new(1,1,1)
-    h.FillTransparency = 0.5; h.OutlineTransparency = 0
-    h.Adornee = model; h.Parent = PG
-    currentHighlight = h; lastTarget = model
-end
-
-local original_NewCaster = m_MadworkCaster.NewCaster
-m_MadworkCaster.NewCaster = function(params)
-    local caster = original_NewCaster(params)
-    if settings.knifeTracers and Drawing then
-        local line = Drawing.new("Line")
-        line.Thickness = 2; line.Color = settings.knifeTracerColor
-        line.Transparency = 0.3; line.Visible = false
-        local startPos = params.Position
-        caster:OnUpdate(function()
-            if not settings.knifeTracers then line.Visible = false return end
-            local s, on1 = Camera:WorldToViewportPoint(startPos)
-            local e, on2 = Camera:WorldToViewportPoint(caster.Position)
-            line.From = Vector2.new(s.X, s.Y); line.To = Vector2.new(e.X, e.Y)
-            line.Visible = on1 and on2
-        end)
-        caster:OnSolve(function() line:Remove() end)
-    end
-    return caster
-end
-
-RunService.Heartbeat:Connect(function()
-    local localChar = LocalPlayer.Character
-    local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
-    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
-    local localAlive = localHum and localHum.Health > 0
-
-    for gameChar, esp in pairs(espObjects) do
-        if not gameChar.Player or not gameChar.Player.Parent then
-            RemoveESPForChar(gameChar); continue
-        end
-        local char = gameChar.Character
-        if not ShouldShowESP(gameChar) or not char or not char.IsAlive then
-            esp.billboard.Enabled = false; esp.highlight.Enabled = false; continue
-        end
-        local model = char.Model
-        local head = model and model:FindFirstChild("Head")
-        if not head then esp.billboard.Enabled = false; esp.highlight.Enabled = false; continue end
-        if esp.lastModel ~= model then
-            esp.billboard.Adornee = head; esp.highlight.Adornee = model; esp.lastModel = model
-        end
-        local color = GetCharColor(gameChar)
-        local hp = gameChar.DamageReceiver and gameChar.DamageReceiver.Health or 0
-        local hpMax = gameChar.DamageReceiver and gameChar.DamageReceiver.MaxHealth or 100
-        local dist = 0
-        if localAlive and localRoot and char.RootPart then
-            dist = math.floor((char.RootPart.Position - localRoot.Position).Magnitude)
-        end
-        local parts = {}
-        if settings.espNames then table.insert(parts, gameChar.Player.Name) end
-        if settings.espDistance then table.insert(parts, localAlive and (dist .. "m") or "?m") end
-        if settings.espHealth then table.insert(parts, math.floor(hp) .. "/" .. math.floor(hpMax) .. "hp") end
-        esp.label.Text = table.concat(parts, " | ")
-        esp.label.TextColor3 = color
-        esp.billboard.Enabled = true
-        if settings.espChams then
-            esp.highlight.FillColor = color; esp.highlight.OutlineColor = color; esp.highlight.Enabled = true
-        else
-            esp.highlight.Enabled = false
-        end
-    end
-
-    if settings.targetHighlight then
-        local head, _, gameChar = GetClosestHead()
-        if gameChar and gameChar.Character and gameChar.Character.IsAlive then
-            ApplyHighlight(gameChar.Character.Model)
-        else ClearHighlight() end
-    else ClearHighlight() end
-end)
-
--- ===================== UI LIBRARY =====================
-local Library = {}
-Library.__index = Library
-
-function Library.new()
-    local self = setmetatable({}, Library)
-    self.ScreenGui = Instance.new("ScreenGui")
-    self.ScreenGui.Name = "SharpScriptHub"; self.ScreenGui.ResetOnSpawn = false
-    self.ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    pcall(function() self.ScreenGui.Parent = game:GetService("CoreGui") end)
-    if not self.ScreenGui.Parent then self.ScreenGui.Parent = PG end
-    self.Main = Instance.new("Frame")
-    self.Main.Size = UDim2.new(0, 520, 0, 540)
-    self.Main.Position = UDim2.new(0.5, -260, 0.5, -270)
-    self.Main.BackgroundColor3 = Color3.fromRGB(18,18,24)
-    self.Main.BorderSizePixel = 0; self.Main.Active = true
-    self.Main.Draggable = true; self.Main.Parent = self.ScreenGui
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,10); c.Parent = self.Main
-    local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(200,60,60); s.Thickness = 1.5; s.Parent = self.Main
-    local tb = Instance.new("Frame"); tb.Size = UDim2.new(1,0,0,40)
-    tb.BackgroundColor3 = Color3.fromRGB(28,28,36); tb.BorderSizePixel = 0; tb.Parent = self.Main
-    local tc = Instance.new("UICorner"); tc.CornerRadius = UDim.new(0,10); tc.Parent = tb
-    local tf = Instance.new("Frame"); tf.Size = UDim2.new(1,0,0,15)
-    tf.Position = UDim2.new(0,0,1,-15); tf.BackgroundColor3 = Color3.fromRGB(28,28,36)
-    tf.BorderSizePixel = 0; tf.Parent = tb
-    local t = Instance.new("TextLabel"); t.Size = UDim2.new(1,-50,1,0)
-    t.Position = UDim2.new(0,15,0,0); t.BackgroundTransparency = 1
-    t.Text = "⚔ SHARP • Combat + Visuals"; t.TextColor3 = Color3.fromRGB(255,90,90)
-    t.Font = Enum.Font.GothamBold; t.TextSize = 15
-    t.TextXAlignment = Enum.TextXAlignment.Left; t.Parent = tb
-    local cb = Instance.new("TextButton"); cb.Size = UDim2.new(0,30,0,30)
-    cb.Position = UDim2.new(1,-35,0,5); cb.BackgroundColor3 = Color3.fromRGB(180,40,40)
-    cb.Text = "_"; cb.TextColor3 = Color3.new(1,1,1); cb.Font = Enum.Font.GothamBold
-    cb.TextSize = 14; cb.Parent = tb
-    local cbc = Instance.new("UICorner"); cbc.CornerRadius = UDim.new(0,6); cbc.Parent = cb
-    local ob = Instance.new("TextButton"); ob.Size = UDim2.new(0,130,0,40)
-    ob.Position = UDim2.new(0,10,0,10); ob.BackgroundColor3 = Color3.fromRGB(180,40,40)
-    ob.Text = "⚔ SHARP Menu"; ob.TextColor3 = Color3.new(1,1,1)
-    ob.Font = Enum.Font.GothamBold; ob.TextSize = 14; ob.Visible = false
-    ob.Parent = self.ScreenGui
-    local obc = Instance.new("UICorner"); obc.CornerRadius = UDim.new(0,6); obc.Parent = ob
-    ob.MouseButton1Click:Connect(function() self.Main.Visible = true; ob.Visible = false end)
-    cb.MouseButton1Click:Connect(function() self.Main.Visible = false; ob.Visible = true end)
-    self.Tabs = {}
-    self.TabContainer = Instance.new("Frame")
-    self.TabContainer.Size = UDim2.new(0,130,1,-50)
-    self.TabContainer.Position = UDim2.new(0,10,0,50)
-    self.TabContainer.BackgroundTransparency = 1; self.TabContainer.Parent = self.Main
-    self.Content = Instance.new("Frame")
-    self.Content.Size = UDim2.new(1,-160,1,-60)
-    self.Content.Position = UDim2.new(0,150,0,50)
-    self.Content.BackgroundTransparency = 1; self.Content.Parent = self.Main
-    return self
-end
-
-function Library:CreateTab(name)
-    local tabBtn = Instance.new("TextButton")
-    tabBtn.Size = UDim2.new(1,0,0,36); tabBtn.Position = UDim2.new(0,0,0,(#self.Tabs)*42)
-    tabBtn.BackgroundColor3 = Color3.fromRGB(28,28,36); tabBtn.Text = name
-    tabBtn.TextColor3 = Color3.fromRGB(200,200,200); tabBtn.Font = Enum.Font.Gotham
-    tabBtn.TextSize = 13; tabBtn.Parent = self.TabContainer
-    local tc = Instance.new("UICorner"); tc.CornerRadius = UDim.new(0,6); tc.Parent = tabBtn
-    local page = Instance.new("ScrollingFrame")
-    page.Size = UDim2.new(1,0,1,0); page.BackgroundTransparency = 1
-    page.BorderSizePixel = 0; page.ScrollBarThickness = 4; page.Visible = false
-    page.CanvasSize = UDim2.new(0,0,0,0); page.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    page.Parent = self.Content
-    local layout = Instance.new("UIListLayout"); layout.Padding = UDim.new(0,8); layout.Parent = page
-    local tab = { Button = tabBtn, Page = page, Name = name }
-    table.insert(self.Tabs, tab)
-    tabBtn.MouseButton1Click:Connect(function()
-        for _, t2 in ipairs(self.Tabs) do
-            t2.Page.Visible = false
-            t2.Button.BackgroundColor3 = Color3.fromRGB(28,28,36)
-            t2.Button.TextColor3 = Color3.fromRGB(200,200,200)
-        end
-        page.Visible = true
-        tabBtn.BackgroundColor3 = Color3.fromRGB(180,40,40)
-        tabBtn.TextColor3 = Color3.new(1,1,1)
-    end)
-    if #self.Tabs == 1 then
-        page.Visible = true; tabBtn.BackgroundColor3 = Color3.fromRGB(180,40,40)
-        tabBtn.TextColor3 = Color3.new(1,1,1)
-    end
-    return page
-end
-
-function Library:CreateSection(parent, text)
-    local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,26)
-    f.BackgroundTransparency = 1; f.Parent = parent
-    local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,0,1,0)
-    l.BackgroundTransparency = 1; l.Text = "▸ "..text
-    l.TextColor3 = Color3.fromRGB(255,100,100); l.Font = Enum.Font.GothamBold
-    l.TextSize = 13; l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f
-    return f
-end
-
-function Library:CreateToggle(parent, text, default, callback)
-    local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,32)
-    f.BackgroundColor3 = Color3.fromRGB(28,28,36); f.BorderSizePixel = 0; f.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = f
-    local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,-60,1,0)
-    l.Position = UDim2.new(0,12,0,0); l.BackgroundTransparency = 1
-    l.Text = text; l.TextColor3 = Color3.fromRGB(220,220,220)
-    l.Font = Enum.Font.Gotham; l.TextSize = 13
-    l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f
-    local t = Instance.new("TextButton"); t.Size = UDim2.new(0,42,0,20)
-    t.Position = UDim2.new(1,-50,0.5,-10)
-    t.BackgroundColor3 = default and Color3.fromRGB(180,40,40) or Color3.fromRGB(50,50,60)
-    t.Text = ""; t.Parent = f
-    local tc = Instance.new("UICorner"); tc.CornerRadius = UDim.new(1,0); tc.Parent = t
-    local circ = Instance.new("Frame"); circ.Size = UDim2.new(0,14,0,14)
-    circ.Position = default and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7)
-    circ.BackgroundColor3 = Color3.new(1,1,1); circ.Parent = t
-    local cc = Instance.new("UICorner"); cc.CornerRadius = UDim.new(1,0); cc.Parent = circ
-    local state = default
-    local function set(v, fire)
-        state = v
-        t.BackgroundColor3 = state and Color3.fromRGB(180,40,40) or Color3.fromRGB(50,50,60)
-        circ.Position = state and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7)
-        if fire and callback then callback(state) end
-    end
-    t.MouseButton1Click:Connect(function() set(not state, true) end)
-    return f, { Set = function(v) set(v, true) end }
-end
-
-function Library:CreateSlider(parent, text, min, max, default, callback)
-    local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,56)
-    f.BackgroundColor3 = Color3.fromRGB(28,28,36); f.BorderSizePixel = 0; f.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = f
-    local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,-80,0,20)
-    l.Position = UDim2.new(0,12,0,6); l.BackgroundTransparency = 1
-    l.Text = text; l.TextColor3 = Color3.fromRGB(220,220,220)
-    l.Font = Enum.Font.Gotham; l.TextSize = 13
-    l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f
-    local vl = Instance.new("TextLabel"); vl.Size = UDim2.new(0,60,0,20)
-    vl.Position = UDim2.new(1,-70,0,6); vl.BackgroundTransparency = 1
-    vl.Text = tostring(default); vl.TextColor3 = Color3.fromRGB(255,100,100)
-    vl.Font = Enum.Font.GothamBold; vl.TextSize = 13
-    vl.TextXAlignment = Enum.TextXAlignment.Right; vl.Parent = f
-    local track = Instance.new("Frame"); track.Size = UDim2.new(1,-24,0,6)
-    track.Position = UDim2.new(0,12,0,36); track.BackgroundColor3 = Color3.fromRGB(50,50,60)
-    track.BorderSizePixel = 0; track.Parent = f
-    local trc = Instance.new("UICorner"); trc.CornerRadius = UDim.new(1,0); trc.Parent = track
-    local a0 = (default-min)/(max-min)
-    local fill = Instance.new("Frame"); fill.Size = UDim2.new(a0,0,1,0)
-    fill.BackgroundColor3 = Color3.fromRGB(180,40,40); fill.BorderSizePixel = 0; fill.Parent = track
-    local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(1,0); fc.Parent = fill
-    local knob = Instance.new("Frame"); knob.Size = UDim2.new(0,16,0,16)
-    knob.Position = UDim2.new(a0,-8,0.5,-8); knob.BackgroundColor3 = Color3.new(1,1,1)
-    knob.BorderSizePixel = 0; knob.Parent = track
-    local kc = Instance.new("UICorner"); kc.CornerRadius = UDim.new(1,0); kc.Parent = knob
-    local value = default; local dragging = false
-    local function setX(x)
-        local ax = track.AbsolutePosition.X; local w = track.AbsoluteSize.X
-        local a = math.clamp((x-ax)/w, 0, 1)
-        value = math.floor(min + (max-min)*a + 0.5)
-        vl.Text = tostring(value)
-        fill.Size = UDim2.new(a,0,1,0); knob.Position = UDim2.new(a,-8,0.5,-8)
-        if callback then callback(value) end
-    end
-    track.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            dragging = true; setX(inp.Position.X)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(inp)
-        if dragging and (inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch) then
-            setX(inp.Position.X)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then dragging = false end
-    end)
-    return f
-end
-
-function Library:CreateColorPicker(parent, text, default, callback)
-    local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,36)
-    f.BackgroundColor3 = Color3.fromRGB(28,28,36); f.BorderSizePixel = 0; f.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = f
-    local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,-160,1,0)
-    l.Position = UDim2.new(0,12,0,0); l.BackgroundTransparency = 1
-    l.Text = text; l.TextColor3 = Color3.fromRGB(220,220,220)
-    l.Font = Enum.Font.Gotham; l.TextSize = 13
-    l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f
-    local hi = Instance.new("TextBox"); hi.Size = UDim2.new(0,85,1,-8)
-    hi.Position = UDim2.new(1,-130,0,4); hi.BackgroundColor3 = Color3.fromRGB(40,40,50)
-    hi.BorderSizePixel = 0
-    hi.Text = string.format("%02X%02X%02X", math.floor(default.R*255), math.floor(default.G*255), math.floor(default.B*255))
-    hi.TextColor3 = Color3.fromRGB(220,220,220); hi.Font = Enum.Font.Gotham
-    hi.TextSize = 12; hi.ClearTextOnFocus = false; hi.Parent = f
-    local hc = Instance.new("UICorner"); hc.CornerRadius = UDim.new(0,4); hc.Parent = hi
-    local sw = Instance.new("Frame"); sw.Size = UDim2.new(0,30,1,-8)
-    sw.Position = UDim2.new(1,-42,0,4); sw.BackgroundColor3 = default
-    sw.BorderSizePixel = 0; sw.Parent = f
-    local sc = Instance.new("UICorner"); sc.CornerRadius = UDim.new(0,4); sc.Parent = sw
-    local cur = default
-    hi.FocusLost:Connect(function()
-        local hex = hi.Text:gsub("#",""):upper()
-        if #hex == 6 and hex:match("^%x+$") then
-            cur = Color3.fromRGB(tonumber(hex:sub(1,2),16), tonumber(hex:sub(3,4),16), tonumber(hex:sub(5,6),16))
-            sw.BackgroundColor3 = cur
-            if callback then callback(cur) end
-        else
-            hi.Text = string.format("%02X%02X%02X", math.floor(cur.R*255), math.floor(cur.G*255), math.floor(cur.B*255))
-        end
-    end)
-    return f
-end
-
-function Library:CreateDropdown(parent, text, options, default, callback)
-    local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,36)
-    f.BackgroundColor3 = Color3.fromRGB(28,28,36); f.BorderSizePixel = 0; f.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = f
-    local l = Instance.new("TextLabel"); l.Size = UDim2.new(1,-160,1,0)
-    l.Position = UDim2.new(0,12,0,0); l.BackgroundTransparency = 1
-    l.Text = text; l.TextColor3 = Color3.fromRGB(220,220,220)
-    l.Font = Enum.Font.Gotham; l.TextSize = 13
-    l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f
-    local dd = Instance.new("TextButton"); dd.Size = UDim2.new(0,140,1,-8)
-    dd.Position = UDim2.new(1,-150,0,4); dd.BackgroundColor3 = Color3.fromRGB(40,40,50)
-    dd.Text = default or options[1]; dd.TextColor3 = Color3.fromRGB(220,220,220)
-    dd.Font = Enum.Font.Gotham; dd.TextSize = 12; dd.Parent = f
-    local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(0,4); dc.Parent = dd
-    local lf = Instance.new("Frame"); lf.Size = UDim2.new(0,140,0,math.min(#options*28,200))
-    lf.Position = UDim2.new(0,0,1,2); lf.BackgroundColor3 = Color3.fromRGB(40,40,50)
-    lf.BorderSizePixel = 0; lf.Visible = false; lf.ZIndex = 10; lf.Parent = dd
-    local lc = Instance.new("UICorner"); lc.CornerRadius = UDim.new(0,4); lc.Parent = lf
-    local scroll = Instance.new("ScrollingFrame"); scroll.Size = UDim2.new(1,0,1,0)
-    scroll.BackgroundTransparency = 1; scroll.ScrollBarThickness = 3
-    scroll.CanvasSize = UDim2.new(0,0,0,#options*28); scroll.ZIndex = 11; scroll.Parent = lf
-    for i, opt in ipairs(options) do
-        local btn = Instance.new("TextButton"); btn.Size = UDim2.new(1,0,0,28)
-        btn.Position = UDim2.new(0,0,0,(i-1)*28); btn.BackgroundColor3 = Color3.fromRGB(50,50,60)
-        btn.BorderSizePixel = 0; btn.Text = opt; btn.TextColor3 = Color3.fromRGB(220,220,220)
-        btn.Font = Enum.Font.Gotham; btn.TextSize = 12; btn.ZIndex = 12; btn.Parent = scroll
-        btn.MouseButton1Click:Connect(function()
-            dd.Text = opt; lf.Visible = false
-            if callback then callback(opt) end
-        end)
-    end
-    dd.MouseButton1Click:Connect(function() lf.Visible = not lf.Visible end)
-    return f
-end
-
-function Library:CreateButton(parent, text, callback)
-    local b = Instance.new("TextButton"); b.Size = UDim2.new(1,-10,0,34)
-    b.BackgroundColor3 = Color3.fromRGB(180,40,40); b.Text = text
-    b.TextColor3 = Color3.new(1,1,1); b.Font = Enum.Font.GothamBold
-    b.TextSize = 13; b.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = b
-    b.MouseButton1Click:Connect(function() if callback then callback() end end)
+local function mkBtn(text, y, color, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -20, 0, 40)
+    b.Position = UDim2.new(0, 10, 0, y)
+    b.BackgroundColor3 = color
+    b.Text = text
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 13
+    b.TextWrapped = true
+    b.Parent = f
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 6)
+    bc.Parent = b
+    b.MouseButton1Click:Connect(callback)
     return b
 end
 
--- ===================== BUILD UI =====================
-local UI = Library.new()
-local combatTab = UI:CreateTab("Combat")
-local aimbotTab = UI:CreateTab("Aimbot")
-local visualTab = UI:CreateTab("Visuals")
+local log = Instance.new("TextLabel")
+log.Size = UDim2.new(1, -20, 1, -280)
+log.Position = UDim2.new(0, 10, 0, 260)
+log.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+log.BorderSizePixel = 0
+log.Text = "Equip a knife first, then tap a test button.\nWatch in-game: which method makes the knife throw?"
+log.TextColor3 = Color3.fromRGB(180, 220, 255)
+log.Font = Enum.Font.Code
+log.TextSize = 11
+log.TextXAlignment = Enum.TextXAlignment.Left
+log.TextYAlignment = Enum.TextYAlignment.Top
+log.TextWrapped = true
+log.Parent = f
+local lc = Instance.new("UICorner")
+lc.CornerRadius = UDim.new(0, 6)
+lc.Parent = log
 
-UI:CreateSection(combatTab, "Sharp Features")
-UI:CreateToggle(combatTab, "Silent Aim", false, function(v) settings.silentAim = v end)
-UI:CreateToggle(combatTab, "Triggerbot (Knife)", false, function(v) settings.triggerBot = v end)
-UI:CreateToggle(combatTab, "Auto Shoot (Knife)", false, function(v) settings.autoShoot = v end)
-UI:CreateToggle(combatTab, "Max Charge", false, function(v) settings.maxCharge = v end)
-UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
-UI:CreateButton(combatTab, "Throw At Target Now", function() TryFire() end)
+local function setLog(msg)
+    log.Text = msg
+end
 
-UI:CreateSection(combatTab, "Combat Debug")
-local debugLabel = Instance.new("TextLabel")
-debugLabel.Size = UDim2.new(1, -10, 0, 150)
-debugLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
-debugLabel.BorderSizePixel = 0
-debugLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
-debugLabel.Font = Enum.Font.Code
-debugLabel.TextSize = 11
-debugLabel.TextXAlignment = Enum.TextXAlignment.Left
-debugLabel.TextYAlignment = Enum.TextYAlignment.Top
-debugLabel.TextWrapped = true
-debugLabel.Text = "Waiting..."
-debugLabel.Parent = combatTab
-
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        local t = {}
-        table.insert(t, "Local alive: " .. tostring(debugInfo.localAlive))
-        table.insert(t, "Tools found: " .. tostring(debugInfo.toolsFound))
-        table.insert(t, "Equipped: " .. tostring(debugInfo.equippedTools))
-        table.insert(t, "Knife equipped: " .. tostring(debugInfo.knifeEquipped))
-        table.insert(t, "Knife FSM state: " .. tostring(debugInfo.knifeState))
-        table.insert(t, "FSM methods: " .. tostring(debugInfo.fsmMethods))
-        table.insert(t, "Fire successes: " .. tostring(debugInfo.fireSuccess))
-        table.insert(t, "Last error: " .. tostring(debugInfo.lastError))
-        debugLabel.Text = table.concat(t, "\n")
+local function findEquippedKnife()
+    for _, tool in ipairs(GetAllTools()) do
+        if tool.Equipped and IsKnifeTool(tool) then
+            return tool
+        end
     end
+    return nil
+end
+
+-- Test 1: FSM Set
+mkBtn("Test 1: fsm:Set('Throw')", 46, Color3.fromRGB(60, 120, 200), function()
+    local tool = findEquippedKnife()
+    if not tool then
+        setLog("❌ No knife equipped.")
+        return
+    end
+    local fsm = tool.Store and tool.Store.FSM
+    if not fsm then
+        setLog("❌ Knife has no FSM.")
+        return
+    end
+    local methods = {}
+    if type(fsm.Set) == "function" then table.insert(methods, "Set") end
+    if type(fsm.SetState) == "function" then table.insert(methods, "SetState") end
+    if type(fsm.ChangeState) == "function" then table.insert(methods, "ChangeState") end
+    if type(fsm.ForceSetState) == "function" then table.insert(methods, "ForceSetState") end
+    if type(fsm.HandleEvent) == "function" then table.insert(methods, "HandleEvent") end
+    
+    local ok, err = pcall(function()
+        if type(fsm.Set) == "function" then fsm:Set("Throw")
+        elseif type(fsm.ForceSetState) == "function" then fsm:ForceSetState("Throw")
+        elseif type(fsm.HandleEvent) == "function" then fsm:HandleEvent("Throw")
+        elseif type(fsm.SetState) == "function" then fsm:SetState("Throw")
+        elseif type(fsm.ChangeState) == "function" then fsm:ChangeState("Throw")
+        else error("No method") end
+    end)
+    
+    setLog(string.format(
+        "Method: fsm:Set\nFSM methods: %s\nState before: %s\nResult: %s",
+        #methods > 0 and table.concat(methods, ", ") or "none",
+        tostring(fsm.State),
+        ok and "✅ no error" or ("❌ " .. tostring(err))
+    ))
 end)
 
-UI:CreateSection(aimbotTab, "Aimbot")
-UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
-UI:CreateToggle(aimbotTab, "Wall Check", false, function(v) settings.aimbot.wallCheck = v end)
-UI:CreateToggle(aimbotTab, "Team Check (Enemy Only)", false, function(v) settings.aimbot.teamCheck = v end)
-UI:CreateToggle(aimbotTab, "Prioritize Closest", false, function(v) settings.aimbot.prioritizeClosest = v end)
-UI:CreateDropdown(aimbotTab, "Target Part", {"Head","HumanoidRootPart","Torso","UpperTorso","LowerTorso"}, "Head", function(opt) settings.aimbot.targetPart = opt end)
-UI:CreateSlider(aimbotTab, "FOV", 50, 1000, 200, function(v) settings.aimbot.fov = v end)
-UI:CreateSlider(aimbotTab, "Max Distance", 50, 2000, 1000, function(v) settings.aimbot.maxDistance = v end)
-UI:CreateSlider(aimbotTab, "Smoothness (÷100)", 1, 100, 100, function(v) settings.aimbot.smoothness = v / 100 end)
-UI:CreateSlider(aimbotTab, "Wall Check Precision", 1, 10, 3, function(v) settings.aimbot.wallCheckPrecision = v end)
+-- Test 2: Tool Activate
+mkBtn("Test 2: tool:Activate()", 92, Color3.fromRGB(80, 160, 100), function()
+    local tool = findEquippedKnife()
+    if not tool then
+        setLog("❌ No knife equipped.")
+        return
+    end
+    local hasActivate = type(tool.Activate) == "function"
+    if not hasActivate then
+        setLog("❌ tool.Activate is not a function.")
+        return
+    end
+    local ok, err = pcall(function() tool:Activate() end)
+    setLog(string.format(
+        "Method: tool:Activate()\nExists: %s\nResult: %s",
+        tostring(hasActivate),
+        ok and "✅ no error" or ("❌ " .. tostring(err))
+    ))
+end)
 
-UI:CreateSection(visualTab, "ESP")
-UI:CreateToggle(visualTab, "Enable ESP", false, function(v) settings.espEnabled = v end)
-UI:CreateToggle(visualTab, "Enemy Only", false, function(v) settings.espEnemyOnly = v; if v then settings.espTeamOnly = false end end)
-UI:CreateToggle(visualTab, "Team Only", false, function(v) settings.espTeamOnly = v; if v then settings.espEnemyOnly = false end end)
-UI:CreateSlider(visualTab, "Max Distance", 50, 2000, 1000, function(v) settings.espMaxDistance = v end)
-UI:CreateSection(visualTab, "ESP Options")
-UI:CreateToggle(visualTab, "Names", true, function(v) settings.espNames = v end)
-UI:CreateToggle(visualTab, "Distance", true, function(v) settings.espDistance = v end)
-UI:CreateToggle(visualTab, "Health", true, function(v) settings.espHealth = v end)
-UI:CreateToggle(visualTab, "Chams (Outline)", false, function(v) settings.espChams = v end)
-UI:CreateSection(visualTab, "ESP Colors")
-UI:CreateColorPicker(visualTab, "Enemy Color", Color3.fromRGB(255,50,50), function(c) settings.espEnemyColor = c end)
-UI:CreateColorPicker(visualTab, "Team Color", Color3.fromRGB(50,255,50), function(c) settings.espTeamColor = c end)
-UI:CreateSection(visualTab, "World")
-UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targetHighlight = v; if not v then ClearHighlight() end end)
-UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
-UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
+-- Test 3: Look for RemoteEvent
+mkBtn("Test 3: Fire Tool Remote", 138, Color3.fromRGB(180, 100, 60), function()
+    local tool = findEquippedKnife()
+    if not tool then
+        setLog("❌ No knife equipped.")
+        return
+    end
+    
+    -- Dump Store structure to find remote
+    local store = tool.Store
+    if not store then
+        setLog("❌ No tool.Store.")
+        return
+    end
+    
+    local keys = {}
+    for k, v in pairs(store) do
+        table.insert(keys, k .. "(" .. type(v) .. ")")
+    end
+    setLog("Store keys:\n" .. table.concat(keys, "\n"))
+end)
 
-print("[SHARP] Loaded — ForceSetState/HandleEvent fire attempts enabled.")
+-- Test 4: Full structure dump
+mkBtn("Test 4: Dump Tool Structure", 184, Color3.fromRGB(150, 60, 150), function()
+    local tool = findEquippedKnife()
+    if not tool then
+        setLog("❌ No knife equipped.")
+        return
+    end
+    
+    local lines = {}
+    table.insert(lines, "=== TOOL ===")
+    for k, v in pairs(tool) do
+        if k ~= "Store" and k ~= "Setup" and type(v) ~= "function" then
+            table.insert(lines, k .. " = " .. tostring(v))
+        end
+    end
+    table.insert(lines, "")
+    table.insert(lines, "=== SETUP ===")
+    if tool.Setup then
+        for k, v in pairs(tool.Setup) do
+            table.insert(lines, k .. " = " .. tostring(v))
+        end
+    end
+    table.insert(lines, "")
+    table.insert(lines, "=== STORE ===")
+    if tool.Store then
+        for k, v in pairs(tool.Store) do
+            table.insert(lines, k .. " (" .. type(v) .. ")")
+        end
+    end
+    setLog(table.concat(lines, "\n"))
+end)
+
+-- Test 5: Dump FSM structure
+mkBtn("Test 5: Dump FSM Structure", 230, Color3.fromRGB(150, 100, 60), function()
+    local tool = findEquippedKnife()
+    if not tool then
+        setLog("❌ No knife equipped.")
+        return
+    end
+    local fsm = tool.Store and tool.Store.FSM
+    if not fsm then
+        setLog("❌ No FSM.")
+        return
+    end
+    
+    local lines = {}
+    table.insert(lines, "=== FSM PROPERTIES ===")
+    for k, v in pairs(fsm) do
+        if type(v) ~= "function" then
+            table.insert(lines, k .. " = " .. tostring(v))
+        end
+    end
+    table.insert(lines, "")
+    table.insert(lines, "=== FSM METHODS ===")
+    local mt = getmetatable(fsm)
+    if mt then
+        for k, v in pairs(mt) do
+            if type(v) == "function" then
+                table.insert(lines, k .. "()")
+            end
+        end
+    end
+    if fsm._states then
+        table.insert(lines, "")
+        table.insert(lines, "=== STATES ===")
+        for name, _ in pairs(fsm._states) do
+            table.insert(lines, name)
+        end
+    end
+    setLog(table.concat(lines, "\n"))
+end)
+
+print("[KnifeTest] Loaded. Equip knife → tap each test button.")
