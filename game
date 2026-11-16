@@ -1,6 +1,5 @@
 -- SHARP module diagnostic
 local RS = game:GetService("ReplicatedStorage")
-
 local function check(path)
     local parts = path:split(".")
     local node = RS
@@ -9,34 +8,14 @@ local function check(path)
     end
     return node ~= nil
 end
-
-local modules = {
+print("=== SHARP MODULE CHECK ===")
+for _, m in ipairs({
     "Client.Controllers.GameCharacterController",
     "Client.Madwork.CombatClient",
     "Client.Madwork.BackpackClient",
     "Client.Madwork.ToolUsageClient",
     "Shared.Madwork.MadFSM",
     "Shared.Madwork.MadworkCaster",
-}
-
-print("=== SHARP MODULE CHECK ===")
-for _, m in ipairs(modules) do
+}) do
     print((check(m) and "[OK]   " or "[FAIL] ") .. m)
 end
-
--- Also dump the Madwork folder so we can see the real names
-local function dumpRecursive(folder, indent)
-    indent = indent or 0
-    if not folder then return end
-    for _, child in ipairs(folder:GetChildren()) do
-        print(string.rep("  ", indent) .. child.ClassName .. "  " .. child.Name)
-        if child:IsA("Folder") then
-            dumpRecursive(child, indent + 1)
-        end
-    end
-end
-
-print("\n=== ReplicatedStorage.Client ===")
-dumpRecursive(RS:FindFirstChild("Client"), 0)
-print("\n=== ReplicatedStorage.Shared ===")
-dumpRecursive(RS:FindFirstChild("Shared"), 0)
