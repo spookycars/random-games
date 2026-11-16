@@ -1,203 +1,42 @@
--- My Cookie Store — Simple Catalog
-local Players = game:GetService("Players")
+-- SHARP module diagnostic
 local RS = game:GetService("ReplicatedStorage")
-local LP = Players.LocalPlayer
-local PG = LP:FindFirstChild("PlayerGui")
 
-if not PG then warn("No PlayerGui") return end
-
-local old = PG:FindFirstChild("CookieSimple")
-if old then old:Destroy() end
-
-local sg = Instance.new("ScreenGui")
-sg.Name = "CookieSimple"
-sg.ResetOnSpawn = false
-sg.Parent = PG
-
-local f = Instance.new("Frame")
-f.Size = UDim2.new(1, -20, 1, -20)
-f.Position = UDim2.new(0, 10, 0, 10)
-f.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
-f.BorderSizePixel = 0
-f.ZIndex = 200
-f.Parent = sg
-
-local c = Instance.new("UICorner")
-c.CornerRadius = UDim.new(0, 8)
-c.Parent = f
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 32)
-title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-title.Text = "Building..."
-title.TextColor3 = Color3.fromRGB(120, 220, 140)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 12
-title.ZIndex = 201
-title.Parent = f
-
-local copyBtn = Instance.new("TextButton")
-copyBtn.Size = UDim2.new(0, 70, 0, 26)
-copyBtn.Position = UDim2.new(1, -240, 0, 3)
-copyBtn.BackgroundColor3 = Color3.fromRGB(60, 120, 200)
-copyBtn.Text = "📋 Copy"
-copyBtn.TextColor3 = Color3.new(1, 1, 1)
-copyBtn.Font = Enum.Font.GothamBold
-copyBtn.TextSize = 11
-copyBtn.ZIndex = 202
-copyBtn.Parent = f
-
-local cbc = Instance.new("UICorner")
-cbc.CornerRadius = UDim.new(0, 6)
-cbc.Parent = copyBtn
-
-local close = Instance.new("TextButton")
-close.Size = UDim2.new(0, 70, 0, 26)
-close.Position = UDim2.new(1, -76, 0, 3)
-close.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
-close.Text = "CLOSE"
-close.TextColor3 = Color3.new(1, 1, 1)
-close.Font = Enum.Font.GothamBold
-close.TextSize = 11
-close.ZIndex = 202
-close.Parent = f
-
-local cc = Instance.new("UICorner")
-cc.CornerRadius = UDim.new(0, 6)
-cc.Parent = close
-close.MouseButton1Click:Connect(function() sg:Destroy() end)
-
-local sf = Instance.new("ScrollingFrame")
-sf.Size = UDim2.new(1, -16, 1, -50)
-sf.Position = UDim2.new(0, 8, 0, 40)
-sf.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
-sf.BorderSizePixel = 0
-sf.ScrollBarThickness = 6
-sf.CanvasSize = UDim2.new(0, 0, 0, 0)
-sf.ZIndex = 201
-sf.Parent = f
-
-local sfc = Instance.new("UICorner")
-sfc.CornerRadius = UDim.new(0, 6)
-sfc.Parent = sf
-
-local tb = Instance.new("TextBox")
-tb.Size = UDim2.new(1, -16, 0, 20000)
-tb.Position = UDim2.new(0, 8, 0, 8)
-tb.BackgroundTransparency = 1
-tb.Text = "Building..."
-tb.TextColor3 = Color3.fromRGB(220, 220, 230)
-tb.Font = Enum.Font.Code
-tb.TextSize = 11
-tb.TextXAlignment = Enum.TextXAlignment.Left
-tb.TextYAlignment = Enum.TextYAlignment.Top
-tb.MultiLine = true
-tb.TextEditable = true
-tb.ClearTextOnFocus = false
-tb.TextWrapped = false
-tb.ZIndex = 202
-tb.Parent = sf
-
-local ItemsFolder = RS:FindFirstChild("CookieStore")
-ItemsFolder = ItemsFolder and ItemsFolder:FindFirstChild("Assets")
-ItemsFolder = ItemsFolder and ItemsFolder:FindFirstChild("Items")
-
-if not ItemsFolder then
-    title.Text = "ERROR: Assets.Items not found"
-    return
-end
-
-local lines = {}
-local function add(s) table.insert(lines, s) end
-
-add("=== MY COOKIE STORE — SIMPLE CATALOG ===")
-add("Format: name | WxD | resize")
-add("W = width in squares, D = depth in squares")
-add("")
-
--- Collect all attribute names to see what's available
-local attrFreq = {}
-local totalItems = #ItemsFolder:GetChildren()
-for _, item in ipairs(ItemsFolder:GetChildren()) do
-    for k, _ in pairs(item:GetAttributes()) do
-        attrFreq[k] = (attrFreq[k] or 0) + 1
+local function check(path)
+    local parts = path:split(".")
+    local node = RS
+    for _, p in ipairs(parts) do
+        node = node and node:FindFirstChild(p)
     end
+    return node ~= nil
 end
 
--- Show attribute names so we can identify "resizable" field
-add("--- ATTRIBUTES FOUND ACROSS ALL ITEMS ---")
-local attrList = {}
-for k, count in pairs(attrFreq) do
-    table.insert(attrList, {name = k, count = count})
-end
-table.sort(attrList, function(a, b) return a.name:lower() < b.name:lower() end)
-for _, a in ipairs(attrList) do
-    add(string.format("  %-25s %d/%d items", a.name, a.count, totalItems))
-end
-add("")
-
--- Resize detection - try common attribute names
-local RESIZE_NAMES = {
-    "Resizable", "Scalable", "CanResize", "CanScale", "Resize",
-    "Scale", "MaxScale", "GridScale", "FootprintMax", "MaxFootprint",
-    "Variants", "Variant", "PropV", "Sizes", "SizeOptions"
+local modules = {
+    "Client.Controllers.GameCharacterController",
+    "Client.Madwork.CombatClient",
+    "Client.Madwork.BackpackClient",
+    "Client.Madwork.ToolUsageClient",
+    "Shared.Madwork.MadFSM",
+    "Shared.Madwork.MadworkCaster",
 }
 
-local function getResizeFlag(item)
-    for _, name in ipairs(RESIZE_NAMES) do
-        local v = item:GetAttribute(name)
-        if v ~= nil then
-            if type(v) == "boolean" then
-                return v and "yes" or "no"
-            elseif type(v) == "number" then
-                return "yes(" .. tostring(v) .. ")"
-            elseif type(v) == "string" then
-                return v
-            end
+print("=== SHARP MODULE CHECK ===")
+for _, m in ipairs(modules) do
+    print((check(m) and "[OK]   " or "[FAIL] ") .. m)
+end
+
+-- Also dump the Madwork folder so we can see the real names
+local function dumpRecursive(folder, indent)
+    indent = indent or 0
+    if not folder then return end
+    for _, child in ipairs(folder:GetChildren()) do
+        print(string.rep("  ", indent) .. child.ClassName .. "  " .. child.Name)
+        if child:IsA("Folder") then
+            dumpRecursive(child, indent + 1)
         end
     end
-    return "?"
 end
 
--- Build item list
-add("--- ITEMS ---")
-local items = ItemsFolder:GetChildren()
-table.sort(items, function(a, b)
-    local an = (a:GetAttribute("ItemId") or a.Name):lower()
-    local bn = (b:GetAttribute("ItemId") or b.Name):lower()
-    return an < bn
-end)
-
-for _, item in ipairs(items) do
-    local name = item:GetAttribute("ItemId") or item.Name
-    local w = item:GetAttribute("FootprintW") or 1
-    local d = item:GetAttribute("FootprintD") or 1
-    local resize = getResizeFlag(item)
-    add(string.format("%-35s | %dx%d | %s", name, w, d, resize))
-end
-
-add("")
-add("Total: " .. totalItems .. " items")
-
-local text = table.concat(lines, "\n")
-local copied = false
-pcall(function() if setclipboard then setclipboard(text); copied = true end end)
-if not copied then pcall(function() if toclipboard then toclipboard(text); copied = true end end) end
-
--- Also save to file
-if writefile then
-    pcall(writefile, "cookie_simple.txt", text)
-    pcall(writefile, "/storage/emulated/0/cookie_simple.txt", text)
-end
-
-title.Text = string.format("Done — %d items, %d chars %s",
-    totalItems, #text, copied and "(copied)" or "")
-
-copyBtn.MouseButton1Click:Connect(function()
-    local t = table.concat(lines, "\n")
-    pcall(function() if setclipboard then setclipboard(t) end end)
-    pcall(function() if toclipboard then toclipboard(t) end end)
-    copyBtn.Text = "✓ Copied"
-    task.wait(1.5)
-    copyBtn.Text = "📋 Copy"
-end)
+print("\n=== ReplicatedStorage.Client ===")
+dumpRecursive(RS:FindFirstChild("Client"), 0)
+print("\n=== ReplicatedStorage.Shared ===")
+dumpRecursive(RS:FindFirstChild("Shared"), 0)
