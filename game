@@ -1,270 +1,310 @@
-repeat task.wait() until game:IsLoaded()
-
+-- Knife Fire Diagnostic — mobile-safe, UI-first, direct tool scan
 local Players = game:GetService("Players")
-local UserInputService = game:GetService("UserInputService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
+local RS = game:GetService("ReplicatedStorage")
+local LP = Players.LocalPlayer
+local PG = LP:FindFirstChild("PlayerGui")
 
-local LocalPlayer = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-local PG = LocalPlayer:WaitForChild("PlayerGui")
+if not PG then return end
 
-local m_BackpackClient = require(ReplicatedStorage.Client.Madwork.BackpackClient)
-local m_ToolUsageClient = require(ReplicatedStorage.Client.Madwork.ToolUsageClient)
+-- ============ UI FIRST (nothing before this) ============
+local old = PG:FindFirstChild("KnifeDiag")
+if old then old:Destroy() end
 
-local function GetAllTools()
+local sg = Instance.new("ScreenGui")
+sg.Name = "KnifeDiag"
+sg.ResetOnSpawn = false
+sg.Parent = PG
+
+local f = Instance.new("Frame")
+f.Size = UDim2.new(1, -20, 1, -20)
+f.Position = UDim2.new(0, 10, 0, 10)
+f.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+f.BorderSizePixel = 0
+f.Parent = sg
+
+local c = Instance.new("UICorner")
+c.CornerRadius = UDim.new(0, 8)
+c.Parent = f
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 34)
+title.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+title.Text = "🔪 Knife Fire Diagnostic"
+title.TextColor3 = Color3.fromRGB(255, 100, 100)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 14
+title.Parent = f
+local tc = Instance.new("UICorner")
+tc.CornerRadius = UDim.new(0, 8)
+tc.Parent = title
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.new(0, 70, 0, 26)
+close.Position = UDim2.new(1, -76, 0, 4)
+close.BackgroundColor3 = Color3.fromRGB(200, 60, 60)
+close.Text = "CLOSE"
+close.TextColor3 = Color3.new(1, 1, 1)
+close.Font = Enum.Font.GothamBold
+close.TextSize = 11
+close.Parent = f
+local cc = Instance.new("UICorner")
+cc.CornerRadius = UDim.new(0, 6)
+cc.Parent = close
+close.Activated:Connect(function() sg:Destroy() end)
+
+-- status line (big, colorful)
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -16, 0, 28)
+status.Position = UDim2.new(0, 8, 0, 40)
+status.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
+status.BorderSizePixel = 0
+status.Text = "Scanning..."
+status.TextColor3 = Color3.fromRGB(255, 200, 80)
+status.Font = Enum.Font.GothamBold
+status.TextSize = 12
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Parent = f
+local stc = Instance.new("UICorner")
+stc.CornerRadius = UDim.new(0, 4)
+stc.Parent = status
+
+-- log box
+local sf = Instance.new("ScrollingFrame")
+sf.Size = UDim2.new(1, -16, 1, -330)
+sf.Position = UDim2.new(0, 8, 0, 74)
+sf.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
+sf.BorderSizePixel = 0
+sf.ScrollBarThickness = 5
+sf.CanvasSize = UDim2.new(0, 0, 0, 0)
+sf.AutomaticCanvasSize = Enum.AutomaticSize.Y
+sf.Parent = f
+local sfc = Instance.new("UICorner")
+sfc.CornerRadius = UDim.new(0, 6)
+sfc.Parent = sf
+
+local logBox = Instance.new("TextBox")
+logBox.Size = UDim2.new(1, -16, 0, 0)
+logBox.Position = UDim2.new(0, 8, 0, 6)
+logBox.BackgroundTransparency = 1
+logBox.Text = ""
+logBox.TextColor3 = Color3.fromRGB(220, 220, 230)
+logBox.Font = Enum.Font.Code
+logBox.TextSize = 10
+logBox.TextXAlignment = Enum.TextXAlignment.Left
+logBox.TextYAlignment = Enum.TextYAlignment.Top
+logBox.MultiLine = true
+logBox.TextEditable = true
+logBox.ClearTextOnFocus = false
+logBox.TextWrapped = true
+logBox.AutomaticSize = Enum.AutomaticSize.Y
+logBox.Parent = sf
+
+-- buttons at bottom
+local function mkButton(text, x, w, y, color, callback)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(w, -4, 0, 44)
+    b.Position = UDim2.new(x, 4, 1, y)
+    b.BackgroundColor3 = color
+    b.Text = text
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.Font = Enum.Font.GothamBold
+    b.TextSize = 11
+    b.TextWrapped = true
+    b.Parent = f
+    local bc = Instance.new("UICorner")
+    bc.CornerRadius = UDim.new(0, 6)
+    bc.Parent = b
+    b.Activated:Connect(callback)
+    return b
+end
+
+-- ============ LOG HELPERS ============
+local logLines = {}
+local function addLog(text)
+    table.insert(logLines, text)
+    logBox.Text = table.concat(logLines, "\n")
+end
+
+local function setStatus(text, color)
+    status.Text = text
+    status.TextColor3 = color or Color3.fromRGB(255, 200, 80)
+end
+
+local function copyAll()
+    local text = table.concat(logLines, "\n")
+    local ok = false
+    pcall(function() if setclipboard then setclipboard(text); ok = true end end)
+    if not ok then pcall(function() if toclipboard then toclipboard(text); ok = true end end) end
+    if not ok and writefile then
+        pcall(writefile, "knife_diag.txt", text)
+        pcall(writefile, "/storage/emulated/0/knife_diag.txt", text)
+    end
+    return ok
+end
+
+-- ============ DIRECT TOOL SCAN (no getupvalues) ============
+local function GetEquippedTool()
+    local char = LP.Character
+    if not char then return nil end
+    for _, child in ipairs(char:GetChildren()) do
+        if child:IsA("Tool") then
+            return child
+        end
+    end
+    return nil
+end
+
+local function GetAllBackpackTools()
     local tools = {}
-    local upvals = getupvalues(m_BackpackClient.GetToolById)
-    for _, v in pairs(upvals) do
-        if type(v) == "table" then
-            for _, tool in pairs(v) do
-                if type(tool) == "table" and tool.Store then
-                    table.insert(tools, tool)
-                end
+    local backpack = LP:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, child in ipairs(backpack:GetChildren()) do
+            if child:IsA("Tool") then
+                table.insert(tools, child)
+            end
+        end
+    end
+    local char = LP.Character
+    if char then
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") then
+                table.insert(tools, child)
             end
         end
     end
     return tools
 end
 
-local function IsKnifeTool(tool)
-    if not tool.Setup then return false end
-    local b = tool.Setup.ToolBehaviour
-    return type(b) == "string" and b:lower():find("knife", 1, true) ~= nil
-end
+-- ============ INITIAL SCAN ============
+task.spawn(function()
+    task.wait(1)
+    addLog("=== KNIFE DIAGNOSTIC ===")
+    addLog("")
 
--- ============ UI ============
-local sg = Instance.new("ScreenGui")
-sg.Name = "KnifeTest"
-sg.ResetOnSpawn = false
-sg.Parent = PG
-
-local f = Instance.new("Frame")
-f.Size = UDim2.new(0, 340, 0, 460)
-f.Position = UDim2.new(0.5, -170, 0.5, -230)
-f.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
-f.BorderSizePixel = 0
-f.Active = true
-f.Draggable = true
-f.Parent = sg
-
-local c = Instance.new("UICorner")
-c.CornerRadius = UDim.new(0, 10)
-c.Parent = f
-
-local s = Instance.new("UIStroke")
-s.Color = Color3.fromRGB(200, 60, 60)
-s.Thickness = 1.5
-s.Parent = f
-
-local t = Instance.new("TextLabel")
-t.Size = UDim2.new(1, 0, 0, 36)
-t.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
-t.Text = "🔪 Knife Fire Test"
-t.TextColor3 = Color3.fromRGB(255, 100, 100)
-t.Font = Enum.Font.GothamBold
-t.TextSize = 14
-t.Parent = f
-local tc = Instance.new("UICorner")
-tc.CornerRadius = UDim.new(0, 10)
-tc.Parent = t
-
-local function mkBtn(text, y, color, callback)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1, -20, 0, 40)
-    b.Position = UDim2.new(0, 10, 0, y)
-    b.BackgroundColor3 = color
-    b.Text = text
-    b.TextColor3 = Color3.new(1, 1, 1)
-    b.Font = Enum.Font.GothamBold
-    b.TextSize = 13
-    b.TextWrapped = true
-    b.Parent = f
-    local bc = Instance.new("UICorner")
-    bc.CornerRadius = UDim.new(0, 6)
-    bc.Parent = b
-    b.MouseButton1Click:Connect(callback)
-    return b
-end
-
-local log = Instance.new("TextLabel")
-log.Size = UDim2.new(1, -20, 1, -280)
-log.Position = UDim2.new(0, 10, 0, 260)
-log.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
-log.BorderSizePixel = 0
-log.Text = "Equip a knife first, then tap a test button.\nWatch in-game: which method makes the knife throw?"
-log.TextColor3 = Color3.fromRGB(180, 220, 255)
-log.Font = Enum.Font.Code
-log.TextSize = 11
-log.TextXAlignment = Enum.TextXAlignment.Left
-log.TextYAlignment = Enum.TextYAlignment.Top
-log.TextWrapped = true
-log.Parent = f
-local lc = Instance.new("UICorner")
-lc.CornerRadius = UDim.new(0, 6)
-lc.Parent = log
-
-local function setLog(msg)
-    log.Text = msg
-end
-
-local function findEquippedKnife()
-    for _, tool in ipairs(GetAllTools()) do
-        if tool.Equipped and IsKnifeTool(tool) then
-            return tool
+    local backpack = LP:FindFirstChildOfClass("Backpack")
+    addLog("Backpack: " .. (backpack and "found" or "MISSING"))
+    if backpack then
+        local count = 0
+        for _, child in ipairs(backpack:GetChildren()) do
+            if child:IsA("Tool") then
+                count = count + 1
+                addLog(string.format("  [backpack] %s (%s)", child.Name, child.ClassName))
+            end
         end
+        addLog("Backpack tools: " .. count)
     end
-    return nil
-end
 
--- Test 1: FSM Set
-mkBtn("Test 1: fsm:Set('Throw')", 46, Color3.fromRGB(60, 120, 200), function()
-    local tool = findEquippedKnife()
-    if not tool then
-        setLog("❌ No knife equipped.")
-        return
+    local char = LP.Character
+    addLog("")
+    addLog("Character: " .. (char and "found" or "MISSING"))
+    if char then
+        local count = 0
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") then
+                count = count + 1
+                addLog(string.format("  [equipped] %s (%s)", child.Name, child.ClassName))
+            end
+        end
+        addLog("Equipped tools: " .. count)
     end
-    local fsm = tool.Store and tool.Store.FSM
-    if not fsm then
-        setLog("❌ Knife has no FSM.")
-        return
+
+    local equipped = GetEquippedTool()
+    addLog("")
+    if equipped then
+        addLog("=== EQUIPPED TOOL ===")
+        addLog("Name: " .. equipped.Name)
+        addLog("Class: " .. equipped.ClassName)
+        addLog("")
+        addLog("Properties:")
+        for k, v in pairs(equipped) do
+            if type(v) ~= "function" and k ~= "Parent" then
+                local val = type(v) == "Instance" and ("[" .. v.ClassName .. "] " .. v.Name) or tostring(v)
+                addLog("  " .. k .. " = " .. val)
+            end
+        end
+        addLog("")
+        addLog("Attributes:")
+        local attrs = equipped:GetAttributes()
+        local hasAttrs = false
+        for k, v in pairs(attrs) do
+            hasAttrs = true
+            addLog("  " .. k .. " = " .. tostring(v))
+        end
+        if not hasAttrs then addLog("  (none)") end
+
+        addLog("")
+        addLog("Children:")
+        for _, child in ipairs(equipped:GetChildren()) do
+            addLog(string.format("  %s (%s)", child.Name, child.ClassName))
+            if child:IsA("ModuleScript") then
+                addLog("    → ModuleScript, may have tool logic")
+            end
+            if child:IsA("RemoteEvent") or child:IsA("RemoteFunction") then
+                addLog("    → Remote! Could be the throw trigger")
+            end
+        end
+        setStatus("✅ Tool found: " .. equipped.Name, Color3.fromRGB(120, 220, 140))
+    else
+        addLog("❌ NO TOOL EQUIPPED")
+        addLog("Equip the knife, then tap Test 1.")
+        setStatus("❌ Equip a knife first", Color3.fromRGB(255, 100, 100))
     end
-    local methods = {}
-    if type(fsm.Set) == "function" then table.insert(methods, "Set") end
-    if type(fsm.SetState) == "function" then table.insert(methods, "SetState") end
-    if type(fsm.ChangeState) == "function" then table.insert(methods, "ChangeState") end
-    if type(fsm.ForceSetState) == "function" then table.insert(methods, "ForceSetState") end
-    if type(fsm.HandleEvent) == "function" then table.insert(methods, "HandleEvent") end
-    
-    local ok, err = pcall(function()
-        if type(fsm.Set) == "function" then fsm:Set("Throw")
-        elseif type(fsm.ForceSetState) == "function" then fsm:ForceSetState("Throw")
-        elseif type(fsm.HandleEvent) == "function" then fsm:HandleEvent("Throw")
-        elseif type(fsm.SetState) == "function" then fsm:SetState("Throw")
-        elseif type(fsm.ChangeState) == "function" then fsm:ChangeState("Throw")
-        else error("No method") end
-    end)
-    
-    setLog(string.format(
-        "Method: fsm:Set\nFSM methods: %s\nState before: %s\nResult: %s",
-        #methods > 0 and table.concat(methods, ", ") or "none",
-        tostring(fsm.State),
-        ok and "✅ no error" or ("❌ " .. tostring(err))
-    ))
+
+    addLog("")
+    addLog("Copy status: " .. (copyAll() and "✓ copied" or "✗ copy failed"))
 end)
 
--- Test 2: Tool Activate
-mkBtn("Test 2: tool:Activate()", 92, Color3.fromRGB(80, 160, 100), function()
-    local tool = findEquippedKnife()
+-- ============ TEST BUTTONS ============
+mkButton("Test 1\nActivate", 0, 0.25, -54, Color3.fromRGB(60, 120, 200), function()
+    setStatus("Test 1: tool:Activate()...", Color3.fromRGB(100, 180, 255))
+    local tool = GetEquippedTool()
     if not tool then
-        setLog("❌ No knife equipped.")
-        return
-    end
-    local hasActivate = type(tool.Activate) == "function"
-    if not hasActivate then
-        setLog("❌ tool.Activate is not a function.")
+        addLog("[Test 1] ❌ No tool equipped")
+        setStatus("❌ No tool", Color3.fromRGB(255, 100, 100))
         return
     end
     local ok, err = pcall(function() tool:Activate() end)
-    setLog(string.format(
-        "Method: tool:Activate()\nExists: %s\nResult: %s",
-        tostring(hasActivate),
-        ok and "✅ no error" or ("❌ " .. tostring(err))
-    ))
+    addLog("[Test 1] tool:Activate() → " .. (ok and "no error" or ("ERR: " .. tostring(err))))
+    setStatus(ok and "✓ Activate sent (did knife throw?)" or "❌ Error", 
+        ok and Color3.fromRGB(120, 220, 140) or Color3.fromRGB(255, 100, 100))
+    copyAll()
 end)
 
--- Test 3: Look for RemoteEvent
-mkBtn("Test 3: Fire Tool Remote", 138, Color3.fromRGB(180, 100, 60), function()
-    local tool = findEquippedKnife()
+mkButton("Test 2\nScan All", 0.25, 0.25, -54, Color3.fromRGB(80, 160, 100), function()
+    setStatus("Test 2: Scanning all tools...", Color3.fromRGB(100, 220, 100))
+    local tools = GetAllBackpackTools()
+    addLog("")
+    addLog("[Test 2] Total tools: " .. #tools)
+    for _, tool in ipairs(tools) do
+        addLog(string.format("  %s (%s) equipped=%s", tool.Name, tool.ClassName, tostring(tool.Parent == LP.Character)))
+    end
+    setStatus("✓ Found " .. #tools .. " tools", Color3.fromRGB(120, 220, 140))
+    copyAll()
+end)
+
+mkButton("Test 3\nChildren", 0.5, 0.25, -54, Color3.fromRGB(180, 100, 60), function()
+    setStatus("Test 3: Dumping tool children...", Color3.fromRGB(255, 160, 60))
+    local tool = GetEquippedTool()
     if not tool then
-        setLog("❌ No knife equipped.")
+        addLog("[Test 3] ❌ No tool equipped")
         return
     end
-    
-    -- Dump Store structure to find remote
-    local store = tool.Store
-    if not store then
-        setLog("❌ No tool.Store.")
-        return
+    addLog("")
+    addLog("[Test 3] Tool: " .. tool.Name)
+    for _, child in ipairs(tool:GetChildren()) do
+        addLog(string.format("  %s (%s)", child.Name, child.ClassName))
+        for _, sub in ipairs(child:GetChildren()) do
+            addLog(string.format("    └ %s (%s)", sub.Name, sub.ClassName))
+        end
     end
-    
-    local keys = {}
-    for k, v in pairs(store) do
-        table.insert(keys, k .. "(" .. type(v) .. ")")
-    end
-    setLog("Store keys:\n" .. table.concat(keys, "\n"))
+    setStatus("✓ Children dumped", Color3.fromRGB(120, 220, 140))
+    copyAll()
 end)
 
--- Test 4: Full structure dump
-mkBtn("Test 4: Dump Tool Structure", 184, Color3.fromRGB(150, 60, 150), function()
-    local tool = findEquippedKnife()
-    if not tool then
-        setLog("❌ No knife equipped.")
-        return
-    end
-    
-    local lines = {}
-    table.insert(lines, "=== TOOL ===")
-    for k, v in pairs(tool) do
-        if k ~= "Store" and k ~= "Setup" and type(v) ~= "function" then
-            table.insert(lines, k .. " = " .. tostring(v))
-        end
-    end
-    table.insert(lines, "")
-    table.insert(lines, "=== SETUP ===")
-    if tool.Setup then
-        for k, v in pairs(tool.Setup) do
-            table.insert(lines, k .. " = " .. tostring(v))
-        end
-    end
-    table.insert(lines, "")
-    table.insert(lines, "=== STORE ===")
-    if tool.Store then
-        for k, v in pairs(tool.Store) do
-            table.insert(lines, k .. " (" .. type(v) .. ")")
-        end
-    end
-    setLog(table.concat(lines, "\n"))
+mkButton("Test 4\nCopy Log", 0.75, 0.25, -54, Color3.fromRGB(150, 60, 150), function()
+    local ok = copyAll()
+    setStatus(ok and "✓ Copied to clipboard" or "✗ Copy failed — screenshot this", 
+        ok and Color3.fromRGB(120, 220, 140) or Color3.fromRGB(255, 100, 100))
 end)
 
--- Test 5: Dump FSM structure
-mkBtn("Test 5: Dump FSM Structure", 230, Color3.fromRGB(150, 100, 60), function()
-    local tool = findEquippedKnife()
-    if not tool then
-        setLog("❌ No knife equipped.")
-        return
-    end
-    local fsm = tool.Store and tool.Store.FSM
-    if not fsm then
-        setLog("❌ No FSM.")
-        return
-    end
-    
-    local lines = {}
-    table.insert(lines, "=== FSM PROPERTIES ===")
-    for k, v in pairs(fsm) do
-        if type(v) ~= "function" then
-            table.insert(lines, k .. " = " .. tostring(v))
-        end
-    end
-    table.insert(lines, "")
-    table.insert(lines, "=== FSM METHODS ===")
-    local mt = getmetatable(fsm)
-    if mt then
-        for k, v in pairs(mt) do
-            if type(v) == "function" then
-                table.insert(lines, k .. "()")
-            end
-        end
-    end
-    if fsm._states then
-        table.insert(lines, "")
-        table.insert(lines, "=== STATES ===")
-        for name, _ in pairs(fsm._states) do
-            table.insert(lines, name)
-        end
-    end
-    setLog(table.concat(lines, "\n"))
-end)
-
-print("[KnifeTest] Loaded. Equip knife → tap each test button.")
+print("[KnifeDiag] Loaded. UI is up. Check the log box.")
