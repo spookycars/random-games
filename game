@@ -17,8 +17,9 @@ local settings = {
     triggerBotMode = "Crosshair",
     autoShoot = false,
     autoReload = true,
-    maxCharge = false,
+    maxCharge = true,
     infiniteAmmo = false,
+    chargeTime = 1.0,
     espEnabled = false,
     espEnemyOnly = false,
     espTeamOnly = false,
@@ -143,57 +144,53 @@ local function ResolveWeaponType(tool)
     return nil
 end
 
--- ============ FIRE LOGIC — charge-aware, no artificial cooldown ============
--- Sharp knife FSM: Charge / ChargeHold / Equip / Fire / Idle / Preview / Throw
--- Sequence: ChargeHold --Set(Fire)--> Fire --(auto)--> Charge --Set(Throw)--> Throw
--- The FSM's own animation durations act as the natural rate limiter
--- No tick() cooldown needed — the state machine handles pacing
+-- ============ FIRE LOGIC (charge-aware) ============
+local chargeStartedAt = {}
 
-local lastKnifeThrowAt = 0
+local function ResetCharges()
+    for k in pairs(chargeStartedAt) do chargeStartedAt[k] = nil end
+end
 
 local function FireKnife(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or "")
-
-    -- Skip states where the FSM is busy
-    if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then
-        return false
-    end
-
-    if state == "ChargeHold" then
-        -- Begin the release sequence — Fire will auto-transition to Charge
-        if type(fsm.Set) == "function" then
-            local ok = pcall(fsm.Set, fsm, "Fire")
-            if ok then return true end
-        end
-        return false
-    end
+    if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then return false end
 
     if state == "Charge" then
-        -- Fully charged, throw now
+        chargeStartedAt[tool] = nil
         local ok = false
         if type(fsm.ForceSetState) == "function" then
-            ok = pcall(fsm.ForceSetState, fsm, "Throw")
+            ok = pcall(fsm.ForceSetState, fsm, "Fire")
         elseif type(fsm.Set) == "function" then
-            ok = pcall(fsm.Set, fsm, "Throw")
+            ok = pcall(fsm.Set, fsm, "Fire")
         end
         return ok
     end
 
+    if state == "ChargeHold" or state == "Idle" then
+        if not chargeStartedAt[tool] then
+            chargeStartedAt[tool] = tick()
+            if state == "Idle" and type(fsm.Set) == "function" then
+                pcall(fsm.Set, fsm, "ChargeHold")
+            end
+            return false
+        end
+        local elapsed = tick() - chargeStartedAt[tool]
+        if elapsed < settings.chargeTime then return false end
+        chargeStartedAt[tool] = nil
+        if type(fsm.Set) == "function" then
+            return pcall(fsm.Set, fsm, "Fire")
+        end
+        return false
+    end
     return false
 end
-
-local GUN_VALID = {
-    Fire = true, Idle = true, Reload = true,
-    Equip = true, Preview = true,
-}
 
 local function FireGun(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or "")
-
     if state == "Reload" then
         if settings.autoReload and type(fsm.Set) == "function" then
             pcall(fsm.Set, fsm, "Idle")
@@ -201,13 +198,8 @@ local function FireGun(tool)
         end
         return false
     end
-
     if state == "Fire" or state == "Throw" then return false end
-    if not GUN_VALID[state] then return false end
-
-    if type(fsm.Set) == "function" then
-        return pcall(fsm.Set, fsm, "Fire")
-    end
+    if type(fsm.Set) == "function" then return pcall(fsm.Set, fsm, "Fire") end
     return false
 end
 
@@ -228,7 +220,6 @@ local function IsCrosshairOnEnemy()
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local localChar = LocalPlayer.Character
     if not localChar then return false end
-
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         if gameChar.Player == LocalPlayer then continue end
         if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
@@ -236,14 +227,10 @@ local function IsCrosshairOnEnemy()
         if not char or not char.IsAlive or not char.Model then continue end
         local head = char.Model:FindFirstChild("Head")
         if not head then continue end
-
         local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
         if not onScreen then continue end
-
         local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
         if dist > CROSSHAIR_RADIUS then continue end
-
-        -- WALL CHECK: raycast from camera to head, excluding own char + target
         local origin = Camera.CFrame.Position
         local direction = head.Position - origin
         local params = RaycastParams.new()
@@ -251,12 +238,7 @@ local function IsCrosshairOnEnemy()
         params.FilterType = Enum.RaycastFilterType.Exclude
         params.IgnoreWater = true
         local result = workspace:Raycast(origin, direction, params)
-
-        -- If raycast returns nil, nothing between us and the target → clear shot
-        -- If raycast returns something, it's a wall → blocked
-        if result == nil then
-            return true
-        end
+        if result == nil then return true end
     end
     return false
 end
@@ -275,7 +257,9 @@ task.spawn(function()
                 local head = GetClosestHead()
                 shouldFire = head ~= nil and IsVisible(head)
             end
-            if shouldFire then TryFire() end
+            if shouldFire then TryFire() else ResetCharges() end
+        else
+            ResetCharges()
         end
     end
 end)
@@ -283,7 +267,11 @@ end)
 task.spawn(function()
     while true do
         task.wait(0.05)
-        if settings.autoShoot then TryFire() end
+        if settings.autoShoot then
+            TryFire()
+        else
+            if not settings.triggerBot then ResetCharges() end
+        end
     end
 end)
 
@@ -372,29 +360,46 @@ RunService.RenderStepped:Connect(aimbotUpdate)
 Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
 
 -- ===================== ESP =====================
+-- Dedicated ScreenGui container so PlayerGui resets don't wipe billboards
+local espScreenGui = Instance.new("ScreenGui")
+espScreenGui.Name = "SharpESPContainer"
+espScreenGui.ResetOnSpawn = false
+espScreenGui.IgnoreGuiInset = true
+espScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+pcall(function() espScreenGui.Parent = game:GetService("CoreGui") end)
+if not espScreenGui.Parent then espScreenGui.Parent = PG end
+
 local espObjects = {}
 
 local function GetCharColor(gameChar)
-    local rel = gameChar.GamePlayer:GetLocalRelationship()
+    local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
+    rel = ok and rel or "Enemy"
     return rel == "Enemy" and settings.espEnemyColor or settings.espTeamColor
 end
 
+-- FIX: when local player is dead, skip ALL filters (spectator mode)
 local function ShouldShowESP(gameChar)
     if not settings.espEnabled then return false end
+
+    local localChar = LocalPlayer.Character
+    local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
+    local localAlive = localHum and localHum.Health > 0
+
+    -- Local player dead → show all ESPs (spectator)
+    if not localAlive then return true end
+
+    -- Local alive → apply filters
     local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
     if ok and rel then
         if settings.espEnemyOnly and rel ~= "Enemy" then return false end
         if settings.espTeamOnly and rel ~= "Friendly" then return false end
     end
-    local localChar = LocalPlayer.Character
-    local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
-    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
-    if localHum and localHum.Health > 0 and localRoot then
-        local enemyRoot = gameChar.Character and gameChar.Character.RootPart
-        if enemyRoot then
-            local dist = (enemyRoot.Position - localRoot.Position).Magnitude
-            if dist > settings.espMaxDistance then return false end
-        end
+
+    local localRoot = localChar:FindFirstChild("HumanoidRootPart")
+    local enemyRoot = gameChar.Character and gameChar.Character.RootPart
+    if localRoot and enemyRoot then
+        local dist = (enemyRoot.Position - localRoot.Position).Magnitude
+        if dist > settings.espMaxDistance then return false end
     end
     return true
 end
@@ -402,14 +407,16 @@ end
 local function CreateESPForChar(gameChar)
     if gameChar.Player == LocalPlayer then return end
     if espObjects[gameChar] then return end
+
     local billboard = Instance.new("BillboardGui")
-    billboard.Name = "SharpESP"
+    billboard.Name = "SharpESP_" .. (gameChar.Player and gameChar.Player.Name or "unknown")
     billboard.Size = UDim2.new(0, 220, 0, 36)
     billboard.StudsOffset = Vector3.new(0, 2.5, 0)
     billboard.AlwaysOnTop = true
     billboard.MaxDistance = math.huge
     billboard.Enabled = false
-    billboard.Parent = PG
+    billboard.Parent = espScreenGui
+
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, 0, 1, 0)
     label.BackgroundTransparency = 1
@@ -419,14 +426,22 @@ local function CreateESPForChar(gameChar)
     label.TextColor3 = Color3.new(1,1,1)
     label.Text = ""
     label.Parent = billboard
+
     local highlight = Instance.new("Highlight")
-    highlight.Name = "SharpChams"
+    highlight.Name = "SharpChams_" .. (gameChar.Player and gameChar.Player.Name or "unknown")
     highlight.FillTransparency = 0.5
     highlight.OutlineColor = Color3.new(1,1,1)
     highlight.OutlineTransparency = 0
     highlight.Enabled = false
-    highlight.Parent = PG
-    espObjects[gameChar] = { billboard = billboard, label = label, highlight = highlight, lastModel = nil }
+    highlight.Parent = espScreenGui
+
+    espObjects[gameChar] = {
+        billboard = billboard,
+        label = label,
+        highlight = highlight,
+        lastModel = nil,
+        lastAdornee = nil,
+    }
 end
 
 local function RemoveESPForChar(gameChar)
@@ -437,28 +452,36 @@ local function RemoveESPForChar(gameChar)
     espObjects[gameChar] = nil
 end
 
+-- Initial ESP creation
 for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
     CreateESPForChar(gameChar)
 end
 m_GameCharacterController.GameCharacterAdded:Connect(CreateESPForChar)
 
+-- FIX: cleanup via PlayerRemoving (definitive), not resync (which gets wiped during local death)
+Players.PlayerRemoving:Connect(function(player)
+    for gc in pairs(espObjects) do
+        if gc.Player == player then
+            RemoveESPForChar(gc)
+        end
+    end
+end)
+
+-- Resync: only ADD new ESPs, never remove (avoids getting wiped on local death)
 task.spawn(function()
     while true do
         task.wait(1)
         pcall(function()
-            local current = m_GameCharacterController.GetGameCharacters()
-            local currentSet = {}
-            for _, gc in ipairs(current) do currentSet[gc] = true end
-            for gc in pairs(espObjects) do
-                if not currentSet[gc] then RemoveESPForChar(gc) end
-            end
-            for _, gc in ipairs(current) do
-                if not espObjects[gc] then CreateESPForChar(gc) end
+            for _, gc in ipairs(m_GameCharacterController.GetGameCharacters()) do
+                if not espObjects[gc] and gc.Player and gc.Player ~= LocalPlayer then
+                    CreateESPForChar(gc)
+                end
             end
         end)
     end
 end)
 
+-- Target Highlight
 local currentHighlight, lastTarget = nil, nil
 local function ClearHighlight()
     if currentHighlight then currentHighlight:Destroy(); currentHighlight = nil end
@@ -473,11 +496,12 @@ local function ApplyHighlight(model)
     h.FillTransparency = 0.5
     h.OutlineTransparency = 0
     h.Adornee = model
-    h.Parent = PG
+    h.Parent = espScreenGui
     currentHighlight = h
     lastTarget = model
 end
 
+-- Knife Tracers
 local original_NewCaster = m_MadworkCaster.NewCaster
 m_MadworkCaster.NewCaster = function(params)
     local caster = original_NewCaster(params)
@@ -501,6 +525,7 @@ m_MadworkCaster.NewCaster = function(params)
     return caster
 end
 
+-- ============ ESP RENDER LOOP ============
 RunService.Heartbeat:Connect(function()
     local localChar = LocalPlayer.Character
     local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
@@ -508,28 +533,61 @@ RunService.Heartbeat:Connect(function()
     local localAlive = localHum and localHum.Health > 0
 
     for gameChar, esp in pairs(espObjects) do
-        if not gameChar.Player or not gameChar.Player.Parent then
+        -- Guard: billboard might have been destroyed externally
+        if not esp.billboard or not esp.billboard.Parent then
             RemoveESPForChar(gameChar)
             continue
         end
+
+        local gcPlayer = gameChar.Player
+        if not gcPlayer then
+            -- Transient nil player (happens during death/respawn in some games)
+            esp.billboard.Enabled = false
+            esp.highlight.Enabled = false
+            continue
+        end
+
+        if not gcPlayer.Parent then
+            -- Player truly left
+            RemoveESPForChar(gameChar)
+            continue
+        end
+
+        if gcPlayer == LocalPlayer then
+            esp.billboard.Enabled = false
+            esp.highlight.Enabled = false
+            continue
+        end
+
         local char = gameChar.Character
         if not ShouldShowESP(gameChar) or not char or not char.IsAlive then
             esp.billboard.Enabled = false
             esp.highlight.Enabled = false
             continue
         end
+
         local model = char.Model
-        local head = model and model:FindFirstChild("Head")
+        if not model then
+            esp.billboard.Enabled = false
+            esp.highlight.Enabled = false
+            continue
+        end
+
+        local head = model:FindFirstChild("Head")
         if not head then
             esp.billboard.Enabled = false
             esp.highlight.Enabled = false
             continue
         end
-        if esp.lastModel ~= model then
+
+        -- FIX: always refresh Adornee when model changes OR the current adornee is stale
+        if esp.lastModel ~= model or esp.lastAdornee ~= head or esp.billboard.Adornee ~= head then
             esp.billboard.Adornee = head
             esp.highlight.Adornee = model
             esp.lastModel = model
+            esp.lastAdornee = head
         end
+
         local color = GetCharColor(gameChar)
         local hp = gameChar.DamageReceiver and gameChar.DamageReceiver.Health or 0
         local hpMax = gameChar.DamageReceiver and gameChar.DamageReceiver.MaxHealth or 100
@@ -537,13 +595,16 @@ RunService.Heartbeat:Connect(function()
         if localAlive and localRoot and char.RootPart then
             dist = math.floor((char.RootPart.Position - localRoot.Position).Magnitude)
         end
+
         local parts = {}
-        if settings.espNames then table.insert(parts, gameChar.Player.Name) end
+        if settings.espNames then table.insert(parts, gcPlayer.Name) end
         if settings.espDistance then table.insert(parts, localAlive and (dist .. "m") or "?m") end
         if settings.espHealth then table.insert(parts, math.floor(hp) .. "/" .. math.floor(hpMax) .. "hp") end
+
         esp.label.Text = table.concat(parts, " | ")
         esp.label.TextColor3 = color
         esp.billboard.Enabled = true
+
         if settings.espChams then
             esp.highlight.FillColor = color
             esp.highlight.OutlineColor = color
@@ -557,8 +618,12 @@ RunService.Heartbeat:Connect(function()
         local head, _, gameChar = GetClosestHead()
         if gameChar and gameChar.Character and gameChar.Character.IsAlive then
             ApplyHighlight(gameChar.Character.Model)
-        else ClearHighlight() end
-    else ClearHighlight() end
+        else
+            ClearHighlight()
+        end
+    else
+        ClearHighlight()
+    end
 end)
 
 -- ===================== UI LIBRARY =====================
@@ -1002,12 +1067,15 @@ UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot 
 UI:CreateDropdown(combatTab, "Triggerbot Mode",
     {"Crosshair", "Aimbot", "Proximity"}, "Crosshair",
     function(opt) settings.triggerBotMode = opt end)
+UI:CreateSlider(combatTab, "Charge Time (÷100 s)", 30, 300, 100, function(v)
+    settings.chargeTime = v / 100
+end)
 UI:CreateToggle(combatTab, "Auto Shoot (blind spam)", false, function(v) settings.autoShoot = v end)
 UI:CreateToggle(combatTab, "Auto Reload", true, function(v) settings.autoReload = v end)
 
 UI:CreateSection(combatTab, "Combat")
 UI:CreateToggle(combatTab, "Silent Aim", false, function(v) settings.silentAim = v end)
-UI:CreateToggle(combatTab, "Max Charge", false, function(v) settings.maxCharge = v end)
+UI:CreateToggle(combatTab, "Max Charge (force full power)", true, function(v) settings.maxCharge = v end)
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
@@ -1042,4 +1110,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — wall check on crosshair, natural FSM pacing.")
+print("[SHARP] Loaded — ESP survives local death, Adornee refresh, PlayerRemoving cleanup.")
