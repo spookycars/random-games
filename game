@@ -11,17 +11,14 @@ local PG = LocalPlayer:WaitForChild("PlayerGui")
 
 -- ===================== SETTINGS =====================
 local settings = {
-    -- Sharp original
     silentAim = false,
     triggerBot = false,
     autoShoot = false,
     maxCharge = false,
     infiniteAmmo = false,
-    -- ESP
     espEnabled = false,
     espEnemyOnly = false,
     espTeamOnly = false,
-    espBoxes = true, -- unused now, kept for future
     espNames = true,
     espDistance = true,
     espHealth = true,
@@ -29,18 +26,16 @@ local settings = {
     espMaxDistance = 1000,
     espEnemyColor = Color3.fromRGB(255, 50, 50),
     espTeamColor = Color3.fromRGB(50, 255, 50),
-    -- World
     targetHighlight = false,
     knifeTracers = false,
     knifeTracerColor = Color3.fromRGB(255, 200, 0),
-    -- Aimbot (ported from DiscordLib)
     aimbot = {
         enabled = false,
         wallCheck = false,
         teamCheck = false,
         targetPart = "Head",
-        fov = math.huge,
-        maxDistance = math.huge,
+        fov = 200,
+        maxDistance = 1000,
         smoothness = 1,
         prioritizeClosest = false,
         wallCheckPrecision = 3,
@@ -54,7 +49,7 @@ local m_BackpackClient = require(ReplicatedStorage.Client.Madwork.BackpackClient
 local m_ToolUsageClient = require(ReplicatedStorage.Client.Madwork.ToolUsageClient)
 local m_MadworkCaster = require(ReplicatedStorage.Shared.Madwork.MadworkCaster)
 
--- ===================== SHARP GAME LOGIC =====================
+-- ===================== SHARP LOGIC =====================
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -98,15 +93,20 @@ local function GetClosestHead()
     return closest, closestPlayer, closestGameChar
 end
 
--- Silent Aim
+-- FIX 2: Silent Aim and Max Charge are now independent
 m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
-    if not settings.silentAim then return end
-    local head = GetClosestHead()
-    if not head then return end
-    local throwPos = combatEvent.GameAction.Position
-    combatEvent.GameAction.Direction = (head.Position - throwPos).Unit
+    if not settings.silentAim and not settings.maxCharge then return end
+
     if settings.maxCharge then
         combatEvent.GameAction.Charge = 1
+    end
+
+    if settings.silentAim then
+        local head = GetClosestHead()
+        if head then
+            local throwPos = combatEvent.GameAction.Position
+            combatEvent.GameAction.Direction = (head.Position - throwPos).Unit
+        end
     end
 end)
 
@@ -146,21 +146,36 @@ local function GetAllTools()
     return tools
 end
 
+-- FIX 3: Case-insensitive knife check
 local function IsKnifeTool(tool)
-    return tool.Setup and tool.Setup.ToolBehaviour == "Knife"
+    if not tool.Setup then return false end
+    local behaviour = tool.Setup.ToolBehaviour
+    if type(behaviour) ~= "string" then return false end
+    return behaviour:lower():find("knife", 1, true) ~= nil
 end
 
+-- FIX 3: Also allow Throw and Fire states again
+local FIRE_STATES = {
+    Idle = true,
+    Throw = true,
+    Fire = true,
+}
+
 local function TryFire()
+    local fired = 0
     for _, tool in ipairs(GetAllTools()) do
         if tool.Equipped and tool.Store.FSM and IsKnifeTool(tool) then
             local fsm = tool.Store.FSM
-            if fsm.State == "Idle" then
-                fsm:Set("Throw")
+            if FIRE_STATES[fsm.State] then
+                local ok = pcall(function() fsm:Set("Throw") end)
+                if ok then fired = fired + 1 end
             end
         end
     end
+    return fired
 end
 
+-- Triggerbot — fires only when a target is visible and reachable
 task.spawn(function()
     while true do
         task.wait(0.05)
@@ -173,19 +188,17 @@ task.spawn(function()
     end
 end)
 
+-- FIX 1: Auto Shoot no longer requires a target
 task.spawn(function()
     while true do
         task.wait(0.05)
         if settings.autoShoot then
-            local head = GetClosestHead()
-            if head then
-                TryFire()
-            end
+            TryFire()
         end
     end
 end)
 
--- ===================== AIMBOT (ported from DiscordLib) =====================
+-- ===================== AIMBOT =====================
 local targetLocked = nil
 
 local function aimbotIsVisible(targetPart, targetModel)
@@ -245,7 +258,6 @@ local function aimbotFindTarget()
     if not localRoot then return nil end
 
     local best, bestScore = nil, math.huge
-
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         local valid, char, part = aimbotValidTarget(gameChar)
         if valid then
@@ -275,18 +287,15 @@ local function aimbotUpdate()
         targetLocked = nil
         return
     end
-
     if targetLocked then
         local valid, char, part = aimbotValidTarget(targetLocked)
         if not valid or not aimbotIsVisible(part, char.Model) then
             targetLocked = nil
         end
     end
-
     if not targetLocked then
         targetLocked = aimbotFindTarget()
     end
-
     if targetLocked then
         local valid, char, part = aimbotValidTarget(targetLocked)
         if valid and part then
@@ -304,7 +313,7 @@ Players.LocalPlayer.CharacterAdded:Connect(function()
     targetLocked = nil
 end)
 
--- ===================== ESP (BillboardGui — MM2 style) =====================
+-- ===================== ESP (BillboardGui) =====================
 local espObjects = {}
 
 local function GetCharColor(gameChar)
@@ -380,7 +389,7 @@ for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
 end
 m_GameCharacterController.GameCharacterAdded:Connect(CreateESPForChar)
 
--- ===================== TARGET HIGHLIGHT =====================
+-- Target Highlight
 local currentHighlight = nil
 local lastTarget = nil
 local function ClearHighlight()
@@ -401,7 +410,7 @@ local function ApplyHighlight(model)
     lastTarget = model
 end
 
--- ===================== KNIFE TRACERS =====================
+-- Knife Tracers
 local original_NewCaster = m_MadworkCaster.NewCaster
 m_MadworkCaster.NewCaster = function(params)
     local caster = original_NewCaster(params)
@@ -425,7 +434,7 @@ m_MadworkCaster.NewCaster = function(params)
     return caster
 end
 
--- ===================== ESP UPDATE LOOP =====================
+-- ESP render loop
 RunService.Heartbeat:Connect(function()
     local localChar = LocalPlayer.Character
     local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
@@ -435,54 +444,39 @@ RunService.Heartbeat:Connect(function()
             RemoveESPForChar(gameChar)
             continue
         end
-
         local char = gameChar.Character
         local show = ShouldShowESP(gameChar)
-
         if not show or not char or not char.IsAlive then
             esp.billboard.Enabled = false
             esp.highlight.Enabled = false
             continue
         end
-
         local model = char.Model
-        if not model then
-            esp.billboard.Enabled = false
-            esp.highlight.Enabled = false
-            continue
-        end
-
-        local head = model:FindFirstChild("Head")
+        local head = model and model:FindFirstChild("Head")
         if not head then
             esp.billboard.Enabled = false
             esp.highlight.Enabled = false
             continue
         end
-
         if esp.lastModel ~= model then
             esp.billboard.Adornee = head
             esp.highlight.Adornee = model
             esp.lastModel = model
         end
-
         local color = GetCharColor(gameChar)
         local hp = gameChar.DamageReceiver and gameChar.DamageReceiver.Health or 0
         local hpMax = gameChar.DamageReceiver and gameChar.DamageReceiver.MaxHealth or 100
-
         local dist = 0
         if localRoot and char.RootPart then
             dist = math.floor((char.RootPart.Position - localRoot.Position).Magnitude)
         end
-
         local parts = {}
         if settings.espNames then table.insert(parts, gameChar.Player.Name) end
         if settings.espDistance then table.insert(parts, dist .. "m") end
         if settings.espHealth then table.insert(parts, math.floor(hp) .. "/" .. math.floor(hpMax) .. "hp") end
-
         esp.label.Text = table.concat(parts, " | ")
         esp.label.TextColor3 = color
         esp.billboard.Enabled = true
-
         if settings.espChams then
             esp.highlight.FillColor = color
             esp.highlight.OutlineColor = color
@@ -492,7 +486,6 @@ RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- Target Highlight
     if settings.targetHighlight then
         local head, _, gameChar = GetClosestHead()
         if gameChar and gameChar.Character and gameChar.Character.IsAlive then
@@ -511,15 +504,12 @@ Library.__index = Library
 
 function Library.new()
     local self = setmetatable({}, Library)
-
     self.ScreenGui = Instance.new("ScreenGui")
     self.ScreenGui.Name = "SharpScriptHub"
     self.ScreenGui.ResetOnSpawn = false
     self.ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     pcall(function() self.ScreenGui.Parent = game:GetService("CoreGui") end)
-    if not self.ScreenGui.Parent then
-        self.ScreenGui.Parent = PG
-    end
+    if not self.ScreenGui.Parent then self.ScreenGui.Parent = PG end
 
     self.Main = Instance.new("Frame")
     self.Main.Size = UDim2.new(0, 500, 0, 460)
@@ -600,7 +590,6 @@ function Library.new()
         self.Main.Visible = true
         toggleBtn.Visible = false
     end)
-
     closeBtn.MouseButton1Click:Connect(function()
         self.Main.Visible = false
         toggleBtn.Visible = true
@@ -670,7 +659,6 @@ function Library:CreateTab(name)
         tabBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
         tabBtn.TextColor3 = Color3.new(1, 1, 1)
     end
-
     return page
 end
 
@@ -679,7 +667,6 @@ function Library:CreateSection(parent, text)
     frame.Size = UDim2.new(1, -10, 0, 26)
     frame.BackgroundTransparency = 1
     frame.Parent = parent
-
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, 0, 1, 0)
     label.BackgroundTransparency = 1
@@ -721,9 +708,9 @@ function Library:CreateToggle(parent, text, default, callback)
     toggle.Text = ""
     toggle.Parent = frame
 
-    local toggleCorner = Instance.new("UICorner")
-    toggleCorner.CornerRadius = UDim.new(1, 0)
-    toggleCorner.Parent = toggle
+    local tc = Instance.new("UICorner")
+    tc.CornerRadius = UDim.new(1, 0)
+    tc.Parent = toggle
 
     local circle = Instance.new("Frame")
     circle.Size = UDim2.new(0, 14, 0, 14)
@@ -731,9 +718,9 @@ function Library:CreateToggle(parent, text, default, callback)
     circle.BackgroundColor3 = Color3.new(1, 1, 1)
     circle.Parent = toggle
 
-    local circleCorner = Instance.new("UICorner")
-    circleCorner.CornerRadius = UDim.new(1, 0)
-    circleCorner.Parent = circle
+    local cc = Instance.new("UICorner")
+    cc.CornerRadius = UDim.new(1, 0)
+    cc.Parent = circle
 
     local state = default
     local function setState(v, fire)
@@ -786,9 +773,9 @@ function Library:CreateSlider(parent, text, min, max, default, callback)
     track.BorderSizePixel = 0
     track.Parent = frame
 
-    local trackCorner = Instance.new("UICorner")
-    trackCorner.CornerRadius = UDim.new(1, 0)
-    trackCorner.Parent = track
+    local trc = Instance.new("UICorner")
+    trc.CornerRadius = UDim.new(1, 0)
+    trc.Parent = track
 
     local initialAlpha = (default - min) / (max - min)
 
@@ -798,9 +785,9 @@ function Library:CreateSlider(parent, text, min, max, default, callback)
     fill.BorderSizePixel = 0
     fill.Parent = track
 
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1, 0)
-    fillCorner.Parent = fill
+    local fc = Instance.new("UICorner")
+    fc.CornerRadius = UDim.new(1, 0)
+    fc.Parent = fill
 
     local knob = Instance.new("Frame")
     knob.Size = UDim2.new(0, 16, 0, 16)
@@ -809,17 +796,17 @@ function Library:CreateSlider(parent, text, min, max, default, callback)
     knob.BorderSizePixel = 0
     knob.Parent = track
 
-    local knobCorner = Instance.new("UICorner")
-    knobCorner.CornerRadius = UDim.new(1, 0)
-    knobCorner.Parent = knob
+    local kc = Instance.new("UICorner")
+    kc.CornerRadius = UDim.new(1, 0)
+    kc.Parent = knob
 
     local value = default
     local dragging = false
 
     local function setFromX(x)
-        local trackAbs = track.AbsolutePosition.X
-        local trackWidth = track.AbsoluteSize.X
-        local alpha = math.clamp((x - trackAbs) / trackWidth, 0, 1)
+        local absX = track.AbsolutePosition.X
+        local w = track.AbsoluteSize.X
+        local alpha = math.clamp((x - absX) / w, 0, 1)
         value = math.floor(min + (max - min) * alpha + 0.5)
         valueLabel.Text = tostring(value)
         fill.Size = UDim2.new(alpha, 0, 1, 0)
@@ -903,10 +890,10 @@ function Library:CreateColorPicker(parent, text, default, callback)
     hexInput.FocusLost:Connect(function()
         local hex = hexInput.Text:gsub("#", ""):upper()
         if #hex == 6 and hex:match("^%x+$") then
-            local r = tonumber(hex:sub(1, 2), 16)
-            local g = tonumber(hex:sub(3, 4), 16)
-            local b = tonumber(hex:sub(5, 6), 16)
-            current = Color3.fromRGB(r, g, b)
+            current = Color3.fromRGB(
+                tonumber(hex:sub(1, 2), 16),
+                tonumber(hex:sub(3, 4), 16),
+                tonumber(hex:sub(5, 6), 16))
             swatch.BackgroundColor3 = current
             if callback then callback(current) end
         else
@@ -986,7 +973,6 @@ function Library:CreateDropdown(parent, text, options, default, callback)
         btn.TextSize = 12
         btn.ZIndex = 12
         btn.Parent = scroll
-
         btn.MouseButton1Click:Connect(function()
             dropdown.Text = opt
             listFrame.Visible = false
@@ -997,7 +983,6 @@ function Library:CreateDropdown(parent, text, options, default, callback)
     dropdown.MouseButton1Click:Connect(function()
         listFrame.Visible = not listFrame.Visible
     end)
-
     return frame
 end
 
@@ -1023,14 +1008,11 @@ end
 
 -- ===================== BUILD UI =====================
 local UI = Library.new()
-
 local combatTab = UI:CreateTab("Combat")
 local aimbotTab = UI:CreateTab("Aimbot")
 local visualTab = UI:CreateTab("Visuals")
 
--- COMBAT
 UI:CreateSection(combatTab, "Sharp Features")
-
 UI:CreateToggle(combatTab, "Silent Aim", false, function(v) settings.silentAim = v end)
 UI:CreateToggle(combatTab, "Triggerbot (Knife)", false, function(v) settings.triggerBot = v end)
 UI:CreateToggle(combatTab, "Auto Shoot (Knife)", false, function(v) settings.autoShoot = v end)
@@ -1038,9 +1020,7 @@ UI:CreateToggle(combatTab, "Max Charge", false, function(v) settings.maxCharge =
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Throw At Target Now", function() TryFire() end)
 
--- AIMBOT
 UI:CreateSection(aimbotTab, "Aimbot")
-
 UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v)
     settings.aimbot.enabled = v
     targetLocked = nil
@@ -1048,62 +1028,40 @@ end)
 UI:CreateToggle(aimbotTab, "Wall Check", false, function(v) settings.aimbot.wallCheck = v end)
 UI:CreateToggle(aimbotTab, "Team Check (Enemy Only)", false, function(v) settings.aimbot.teamCheck = v end)
 UI:CreateToggle(aimbotTab, "Prioritize Closest", false, function(v) settings.aimbot.prioritizeClosest = v end)
-
 UI:CreateDropdown(aimbotTab, "Target Part",
-    {"Head", "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"},
-    "Head",
+    {"Head", "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso"}, "Head",
     function(opt) settings.aimbot.targetPart = opt end)
+UI:CreateSlider(aimbotTab, "FOV", 50, 1000, 200, function(v) settings.aimbot.fov = v end)
+UI:CreateSlider(aimbotTab, "Max Distance", 50, 2000, 1000, function(v) settings.aimbot.maxDistance = v end)
+UI:CreateSlider(aimbotTab, "Smoothness (÷100)", 1, 100, 100, function(v) settings.aimbot.smoothness = v / 100 end)
+UI:CreateSlider(aimbotTab, "Wall Check Precision", 1, 10, 3, function(v) settings.aimbot.wallCheckPrecision = v end)
 
-UI:CreateSlider(aimbotTab, "FOV", 50, 1000, 200, function(v)
-    settings.aimbot.fov = v
-end)
-UI:CreateSlider(aimbotTab, "Max Distance", 50, 2000, 1000, function(v)
-    settings.aimbot.maxDistance = v
-end)
-UI:CreateSlider(aimbotTab, "Smoothness (÷100)", 1, 100, 100, function(v)
-    settings.aimbot.smoothness = v / 100
-end)
-UI:CreateSlider(aimbotTab, "Wall Check Precision", 1, 10, 3, function(v)
-    settings.aimbot.wallCheckPrecision = v
-end)
-
--- VISUALS
 UI:CreateSection(visualTab, "ESP")
-
 local enemyHandle, teamHandle
-
 UI:CreateToggle(visualTab, "Enable ESP", false, function(v) settings.espEnabled = v end)
-
 local _, eh = UI:CreateToggle(visualTab, "Enemy Only", false, function(v)
     settings.espEnemyOnly = v
     if v and teamHandle then settings.espTeamOnly = false teamHandle.Set(false) end
 end)
 enemyHandle = eh
-
 local _, th = UI:CreateToggle(visualTab, "Team Only", false, function(v)
     settings.espTeamOnly = v
     if v and enemyHandle then settings.espEnemyOnly = false enemyHandle.Set(false) end
 end)
 teamHandle = th
-
-UI:CreateSlider(visualTab, "Max Distance", 50, 2000, 1000, function(v)
-    settings.espMaxDistance = v
-end)
+UI:CreateSlider(visualTab, "Max Distance", 50, 2000, 1000, function(v) settings.espMaxDistance = v end)
 
 UI:CreateSection(visualTab, "ESP Options")
-
 UI:CreateToggle(visualTab, "Names", true, function(v) settings.espNames = v end)
 UI:CreateToggle(visualTab, "Distance", true, function(v) settings.espDistance = v end)
 UI:CreateToggle(visualTab, "Health", true, function(v) settings.espHealth = v end)
 UI:CreateToggle(visualTab, "Chams (Outline)", false, function(v) settings.espChams = v end)
 
 UI:CreateSection(visualTab, "ESP Colors")
-
 UI:CreateColorPicker(visualTab, "Enemy Color", Color3.fromRGB(255, 50, 50), function(c) settings.espEnemyColor = c end)
 UI:CreateColorPicker(visualTab, "Team Color", Color3.fromRGB(50, 255, 50), function(c) settings.espTeamColor = c end)
 
 UI:CreateSection(visualTab, "World")
-
 UI:CreateToggle(visualTab, "Target Highlight", false, function(v)
     settings.targetHighlight = v
     if not v then ClearHighlight() end
@@ -1111,4 +1069,4 @@ end)
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255, 200, 0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — Billboard ESP + ported Aimbot.")
+print("[SHARP] Loaded — autoshoot fixed, max charge decoupled.")
