@@ -13,7 +13,7 @@ local PG = LocalPlayer:WaitForChild("PlayerGui")
 local settings = {
     silentAim = false,
     triggerBot = false,
-    triggerBotMode = "Crosshair", -- "Crosshair" | "Aimbot" | "Proximity"
+    triggerBotMode = "Crosshair",
     autoShoot = false,
     autoReload = true,
     maxCharge = false,
@@ -159,51 +159,6 @@ local function ResolveWeaponType(tool)
     return nil
 end
 
--- ============ DEBUG ============
-local debugInfo = {
-    toolsFound = 0, equippedTools = 0, weaponType = "none",
-    weaponName = "-", weaponState = "?", triggerMode = "Crosshair",
-    crosshairOnEnemy = false, aimbotLocked = false,
-    fireSuccess = 0, lastAction = "none", localAlive = false,
-}
-
-local function UpdateDebug()
-    debugInfo.toolsFound = 0
-    debugInfo.equippedTools = 0
-    debugInfo.weaponType = "none"
-    debugInfo.weaponName = "-"
-    debugInfo.weaponState = "?"
-    debugInfo.triggerMode = settings.triggerBotMode
-
-    local localChar = LocalPlayer.Character
-    local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
-    debugInfo.localAlive = localHum ~= nil and localHum.Health > 0
-
-    local tools = GetAllTools()
-    debugInfo.toolsFound = #tools
-    for _, tool in ipairs(tools) do
-        if tool.Equipped then
-            debugInfo.equippedTools = debugInfo.equippedTools + 1
-            local wType = ResolveWeaponType(tool)
-            if wType then
-                debugInfo.weaponType = wType
-                debugInfo.weaponName = tool.Setup and (tool.Setup.ToolBehaviour or "?") or "?"
-                local fsm = tool.Store and tool.Store.FSM
-                if fsm then
-                    debugInfo.weaponState = tostring(fsm.State)
-                end
-            end
-        end
-    end
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.3)
-        pcall(UpdateDebug)
-    end
-end)
-
 -- ============ FIRE LOGIC ============
 local KNIFE_STATES = { idle = true, ready = true, neutral = true, rest = true, throw = true, fire = true }
 local GUN_STATES = { idle = true, ready = true, neutral = true, fire = true, shoot = true, attack = true }
@@ -219,75 +174,52 @@ end
 
 local function FireKnife(tool)
     local fsm = tool.Store.FSM
-    if not fsm then return false, "no FSM" end
+    if not fsm then return false end
     local state = tostring(fsm.State or ""):lower()
     if KNIFE_STATES[state] then
-        local ok, err = pcall(FsmSet, fsm, "Throw")
-        return ok, err
+        return pcall(FsmSet, fsm, "Throw")
     end
-    return false, "state=" .. tostring(fsm.State)
+    return false
 end
 
 local function FireGun(tool)
     local fsm = tool.Store.FSM
-    if not fsm then return false, "no FSM" end
+    if not fsm then return false end
     local state = tostring(fsm.State or ""):lower()
 
     if state == "reload" then
         if settings.autoReload then
-            local ok, err = pcall(FsmSet, fsm, "Fire")
+            local ok = pcall(FsmSet, fsm, "Fire")
             if ok then
                 pcall(FsmSet, fsm, "Idle")
                 pcall(FsmSet, fsm, "Fire")
-                return true, "reloaded"
+                return true
             end
-            return false, "reload failed: " .. tostring(err)
         end
-        return false, "reloading"
+        return false
     end
 
     if GUN_STATES[state] then
-        local ok, err = pcall(FsmSet, fsm, "Fire")
+        local ok = pcall(FsmSet, fsm, "Fire")
         if ok then return true end
         for _, alt in ipairs({"Shoot", "Attack"}) do
             if pcall(FsmSet, fsm, alt) then return true end
         end
-        return false, tostring(err)
     end
-    return false, "state=" .. tostring(fsm.State)
+    return false
 end
 
 local function TryFire()
-    local fired = 0
     for _, tool in ipairs(GetAllTools()) do
         if tool.Equipped and tool.Store and tool.Store.FSM then
             local wType = ResolveWeaponType(tool)
-            if wType == "knife" then
-                local ok, err = FireKnife(tool)
-                if ok then
-                    fired = fired + 1
-                    debugInfo.fireSuccess = debugInfo.fireSuccess + 1
-                    debugInfo.lastAction = "knife fire ✓"
-                else
-                    debugInfo.lastAction = "knife: " .. tostring(err)
-                end
-            elseif wType == "gun" then
-                local ok, err = FireGun(tool)
-                if ok then
-                    fired = fired + 1
-                    debugInfo.fireSuccess = debugInfo.fireSuccess + 1
-                    debugInfo.lastAction = "gun fire ✓"
-                else
-                    debugInfo.lastAction = "gun: " .. tostring(err)
-                end
-            end
+            if wType == "knife" then FireKnife(tool)
+            elseif wType == "gun" then FireGun(tool) end
         end
     end
-    return fired
 end
 
 -- ============ TRIGGERBOT CHECKS ============
--- Mode 1: Crosshair — raycast from center of screen, fire if it hits an enemy
 local function IsCrosshairOnEnemy()
     local origin = Camera.CFrame.Position
     local direction = Camera.CFrame.LookVector * 1000
@@ -296,24 +228,15 @@ local function IsCrosshairOnEnemy()
     params.FilterType = Enum.RaycastFilterType.Exclude
     local result = workspace:Raycast(origin, direction, params)
     if not result then return false end
-
     local hitPart = result.Instance
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         if gameChar.Player == LocalPlayer then continue end
         if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
         local char = gameChar.Character
         if char and char.IsAlive and char.Model and hitPart:IsDescendantOf(char.Model) then
-            return true, gameChar
+            return true
         end
     end
-    return false
-end
-
--- Mode 2: Aimbot lock — checks whether the aimbot has a target
-local function IsAimbotLocked()
-    if not targetLocked then return false end
-    local valid, char, part = aimbotValidTarget(targetLocked)
-    if valid and part then return true, targetLocked end
     return false
 end
 
@@ -323,26 +246,15 @@ task.spawn(function()
         task.wait(0.05)
         if settings.triggerBot then
             local shouldFire = false
-
             if settings.triggerBotMode == "Crosshair" then
                 shouldFire = IsCrosshairOnEnemy()
-                debugInfo.crosshairOnEnemy = shouldFire
-                debugInfo.aimbotLocked = false
             elseif settings.triggerBotMode == "Aimbot" then
-                shouldFire = IsAimbotLocked()
-                debugInfo.aimbotLocked = shouldFire
-                debugInfo.crosshairOnEnemy = false
-            else -- Proximity
+                shouldFire = targetLocked ~= nil
+            else
                 local head = GetClosestHead()
                 shouldFire = head ~= nil and IsVisible(head)
-                debugInfo.crosshairOnEnemy = shouldFire
-                debugInfo.aimbotLocked = false
             end
-
             if shouldFire then TryFire() end
-        else
-            debugInfo.crosshairOnEnemy = false
-            debugInfo.aimbotLocked = false
         end
     end
 end)
@@ -644,8 +556,8 @@ function Library.new()
     if not self.ScreenGui.Parent then self.ScreenGui.Parent = PG end
 
     self.Main = Instance.new("Frame")
-    self.Main.Size = UDim2.new(0, 520, 0, 580)
-    self.Main.Position = UDim2.new(0.5, -260, 0.5, -290)
+    self.Main.Size = UDim2.new(0, 500, 0, 520)
+    self.Main.Position = UDim2.new(0.5, -250, 0.5, -260)
     self.Main.BackgroundColor3 = Color3.fromRGB(18,18,24)
     self.Main.BorderSizePixel = 0
     self.Main.Active = true
@@ -736,12 +648,30 @@ function Library:CreateTab(name)
     page.Size = UDim2.new(1,0,1,0)
     page.BackgroundTransparency = 1
     page.BorderSizePixel = 0
-    page.ScrollBarThickness = 4
+    page.ScrollBarThickness = 5
+    page.ScrollBarImageColor3 = Color3.fromRGB(180,40,40)
+    page.ScrollingDirection = Enum.ScrollingDirection.Y
+    page.ScrollingEnabled = true
     page.Visible = false
-    page.CanvasSize = UDim2.new(0,0,0,0)
-    page.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    page.CanvasSize = UDim2.new(0, 0, 0, 0)
     page.Parent = self.Content
-    local layout = Instance.new("UIListLayout"); layout.Padding = UDim.new(0,8); layout.Parent = page
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 8)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = page
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 4)
+    padding.PaddingBottom = UDim.new(0, 12)
+    padding.Parent = page
+
+    -- Explicit canvas size so mobile scrolling always works
+    local function updateCanvas()
+        page.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 24)
+    end
+    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
+    task.defer(updateCanvas)
 
     local tab = { Button = tabBtn, Page = page, Name = name }
     table.insert(self.Tabs, tab)
@@ -755,6 +685,7 @@ function Library:CreateTab(name)
         page.Visible = true
         tabBtn.BackgroundColor3 = Color3.fromRGB(180,40,40)
         tabBtn.TextColor3 = Color3.new(1,1,1)
+        updateCanvas()
     end)
 
     if #self.Tabs == 1 then
@@ -1048,6 +979,7 @@ local combatTab = UI:CreateTab("Combat")
 local aimbotTab = UI:CreateTab("Aimbot")
 local visualTab = UI:CreateTab("Visuals")
 
+-- COMBAT
 UI:CreateSection(combatTab, "Fire Mode")
 UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot = v end)
 UI:CreateDropdown(combatTab, "Triggerbot Mode",
@@ -1062,37 +994,7 @@ UI:CreateToggle(combatTab, "Max Charge", false, function(v) settings.maxCharge =
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
-UI:CreateSection(combatTab, "Debug")
-local debugLabel = Instance.new("TextLabel")
-debugLabel.Size = UDim2.new(1,-10,0,160)
-debugLabel.BackgroundColor3 = Color3.fromRGB(30,30,42)
-debugLabel.BorderSizePixel = 0
-debugLabel.TextColor3 = Color3.fromRGB(180,220,255)
-debugLabel.Font = Enum.Font.Code
-debugLabel.TextSize = 11
-debugLabel.TextXAlignment = Enum.TextXAlignment.Left
-debugLabel.TextYAlignment = Enum.TextYAlignment.Top
-debugLabel.TextWrapped = true
-debugLabel.Text = "Waiting..."
-debugLabel.Parent = combatTab
-
-task.spawn(function()
-    while true do
-        task.wait(0.2)
-        local lines = {}
-        table.insert(lines, "Local alive: " .. tostring(debugInfo.localAlive))
-        table.insert(lines, "Tools: " .. tostring(debugInfo.toolsFound) .. " (equipped: " .. tostring(debugInfo.equippedTools) .. ")")
-        table.insert(lines, "Weapon: " .. debugInfo.weaponType .. " (" .. debugInfo.weaponName .. ")")
-        table.insert(lines, "FSM state: " .. debugInfo.weaponState)
-        table.insert(lines, "Trigger mode: " .. debugInfo.triggerMode)
-        table.insert(lines, "Crosshair on enemy: " .. tostring(debugInfo.crosshairOnEnemy))
-        table.insert(lines, "Aimbot locked: " .. tostring(debugInfo.aimbotLocked))
-        table.insert(lines, "Fire count: " .. tostring(debugInfo.fireSuccess))
-        table.insert(lines, "Last action: " .. debugInfo.lastAction)
-        debugLabel.Text = table.concat(lines, "\n")
-    end
-end)
-
+-- AIMBOT
 UI:CreateSection(aimbotTab, "Aimbot")
 UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
 UI:CreateToggle(aimbotTab, "Wall Check", false, function(v) settings.aimbot.wallCheck = v end)
@@ -1106,6 +1008,7 @@ UI:CreateSlider(aimbotTab, "Max Distance", 50, 2000, 1000, function(v) settings.
 UI:CreateSlider(aimbotTab, "Smoothness (÷100)", 1, 100, 100, function(v) settings.aimbot.smoothness = v / 100 end)
 UI:CreateSlider(aimbotTab, "Wall Check Precision", 1, 10, 3, function(v) settings.aimbot.wallCheckPrecision = v end)
 
+-- VISUALS
 UI:CreateSection(visualTab, "ESP")
 UI:CreateToggle(visualTab, "Enable ESP", false, function(v) settings.espEnabled = v end)
 UI:CreateToggle(visualTab, "Enemy Only", false, function(v) settings.espEnemyOnly = v; if v then settings.espTeamOnly = false end end)
@@ -1124,4 +1027,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — triggerbot now supports Crosshair/Aimbot/Proximity modes.")
+print("[SHARP] Loaded — debug removed, scroll fixed.")
