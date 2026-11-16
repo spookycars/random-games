@@ -11,6 +11,7 @@ local PG = LocalPlayer:WaitForChild("PlayerGui")
 
 local targetLocked = nil
 
+-- ===================== SETTINGS =====================
 local settings = {
     silentAim = false,
     triggerBot = false,
@@ -37,14 +38,18 @@ local settings = {
         targetPart = "Head", fov = 200, maxDistance = 1000,
         smoothness = 1, prioritizeClosest = false, wallCheckPrecision = 3,
     },
+    knifeThrowCooldown = 0.8,
+    crosshairRadius = 40,
 }
 
+-- ===================== MODULES =====================
 local m_GameCharacterController = require(ReplicatedStorage.Client.Controllers.GameCharacterController)
 local m_CombatClient = require(ReplicatedStorage.Client.Madwork.CombatClient)
 local m_BackpackClient = require(ReplicatedStorage.Client.Madwork.BackpackClient)
 local m_ToolUsageClient = require(ReplicatedStorage.Client.Madwork.ToolUsageClient)
 local m_MadworkCaster = require(ReplicatedStorage.Shared.Madwork.MadworkCaster)
 
+-- ===================== SHARP LOGIC =====================
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -143,20 +148,14 @@ local function ResolveWeaponType(tool)
     return nil
 end
 
--- ============ FIRE LOGIC (FIXED FOR SHARP) ============
--- Known Sharp knife states: Charge, ChargeHold, Equip, Fire, Idle, Preview, Throw
--- ForceSetState bypasses transition rules → can jump ChargeHold → Throw
+-- ============ FIRE LOGIC (charge-aware + cooldown) ============
+-- Sharp knife states: Charge, ChargeHold, Equip, Fire, Idle, Preview, Throw
+-- Correct throw path: ChargeHold → Fire → (auto) → Charge → Throw
+-- ForceSetState("Throw") skips charge and produces a 0-power throw
+-- Cooldown prevents the 50ms spam loop
 
-local KNIFE_VALID = {
-    ["Charge"] = true, ["ChargeHold"] = true, ["Fire"] = true,
-    ["Idle"] = true, ["Preview"] = true, ["Throw"] = true,
-}
-
-local GUN_VALID = {
-    ["Fire"] = true, ["Idle"] = true, ["Reload"] = true,
-    ["Equip"] = true, ["Preview"] = true, ["Charge"] = true,
-    ["ChargeHold"] = true, ["Throw"] = true,
-}
+local lastThrowTime = 0
+local lastGunTime = 0
 
 local function TryFsm(fsm, stateName)
     if type(fsm.ForceSetState) == "function" then
@@ -178,9 +177,33 @@ local function FireKnife(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or "")
-    if not KNIFE_VALID[state] then return false end
-    if state == "Fire" or state == "Throw" then return false end
-    return TryFsm(fsm, "Throw")
+
+    if state == "Throw" or state == "Equip" or state == "Preview" then return false end
+    if tick() - lastThrowTime < settings.knifeThrowCooldown then return false end
+
+    if state == "ChargeHold" then
+        pcall(function()
+            if type(fsm.Set) == "function" then fsm:Set("Fire") end
+        end)
+        lastThrowTime = tick()
+        return true
+    end
+
+    if state == "Fire" then return false end
+
+    if state == "Charge" then
+        pcall(function()
+            if type(fsm.ForceSetState) == "function" then
+                fsm:ForceSetState("Throw")
+            elseif type(fsm.Set) == "function" then
+                fsm:Set("Throw")
+            end
+        end)
+        lastThrowTime = tick()
+        return true
+    end
+
+    return false
 end
 
 local function FireGun(tool)
@@ -190,12 +213,17 @@ local function FireGun(tool)
 
     if state == "Reload" then
         if settings.autoReload then
-            return TryFsm(fsm, "Idle")
+            pcall(function()
+                if type(fsm.Set) == "function" then fsm:Set("Idle") end
+            end)
+            return true
         end
         return false
     end
 
     if state == "Fire" or state == "Throw" then return false end
+    if tick() - lastGunTime < 0.15 then return false end
+    lastGunTime = tick()
     return TryFsm(fsm, "Fire")
 end
 
@@ -209,9 +237,7 @@ local function TryFire()
     end
 end
 
--- ============ TRIGGERBOT ============
-local CROSSHAIR_RADIUS = 60
-
+-- ============ TRIGGERBOT CHECKS ============
 local function IsCrosshairOnEnemy()
     local center = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
@@ -224,7 +250,7 @@ local function IsCrosshairOnEnemy()
                 local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
                 if onScreen then
                     local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-                    if dist <= CROSSHAIR_RADIUS then return true end
+                    if dist <= settings.crosshairRadius then return true end
                 end
             end
         end
@@ -232,6 +258,7 @@ local function IsCrosshairOnEnemy()
     return false
 end
 
+-- ============ TRIGGERBOT LOOP ============
 task.spawn(function()
     while true do
         task.wait(0.05)
@@ -967,11 +994,18 @@ local combatTab = UI:CreateTab("Combat")
 local aimbotTab = UI:CreateTab("Aimbot")
 local visualTab = UI:CreateTab("Visuals")
 
+-- COMBAT
 UI:CreateSection(combatTab, "Fire Mode")
 UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot = v end)
 UI:CreateDropdown(combatTab, "Triggerbot Mode",
     {"Crosshair", "Aimbot", "Proximity"}, "Crosshair",
     function(opt) settings.triggerBotMode = opt end)
+UI:CreateSlider(combatTab, "Crosshair Radius (px)", 10, 200, 40, function(v)
+    settings.crosshairRadius = v
+end)
+UI:CreateSlider(combatTab, "Knife Cooldown (÷100 s)", 30, 300, 80, function(v)
+    settings.knifeThrowCooldown = v / 100
+end)
 UI:CreateToggle(combatTab, "Auto Shoot (blind spam)", false, function(v) settings.autoShoot = v end)
 UI:CreateToggle(combatTab, "Auto Reload", true, function(v) settings.autoReload = v end)
 
@@ -981,6 +1015,7 @@ UI:CreateToggle(combatTab, "Max Charge", false, function(v) settings.maxCharge =
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
+-- AIMBOT
 UI:CreateSection(aimbotTab, "Aimbot")
 UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
 UI:CreateToggle(aimbotTab, "Wall Check", false, function(v) settings.aimbot.wallCheck = v end)
@@ -994,6 +1029,7 @@ UI:CreateSlider(aimbotTab, "Max Distance", 50, 2000, 1000, function(v) settings.
 UI:CreateSlider(aimbotTab, "Smoothness (÷100)", 1, 100, 100, function(v) settings.aimbot.smoothness = v / 100 end)
 UI:CreateSlider(aimbotTab, "Wall Check Precision", 1, 10, 3, function(v) settings.aimbot.wallCheckPrecision = v end)
 
+-- VISUALS
 UI:CreateSection(visualTab, "ESP")
 UI:CreateToggle(visualTab, "Enable ESP", false, function(v) settings.espEnabled = v end)
 UI:CreateToggle(visualTab, "Enemy Only", false, function(v) settings.espEnemyOnly = v; if v then settings.espTeamOnly = false end end)
@@ -1012,4 +1048,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — knife uses ForceSetState to bypass ChargeHold transition rules.")
+print("[SHARP] Loaded — charge-aware knife fire with cooldown.")
