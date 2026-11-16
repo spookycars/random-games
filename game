@@ -25,9 +25,17 @@ local settings = {
     targetHighlight = false, knifeTracers = false,
     knifeTracerColor = Color3.fromRGB(255, 200, 0),
     aimbot = {
-        enabled = false, wallCheck = false, teamCheck = false,
-        targetPart = "Head", fov = 200, maxDistance = 1000,
-        smoothness = 1, prioritizeClosest = false, wallCheckPrecision = 3,
+        enabled = false,
+        wallCheck = false,
+        teamCheck = false,
+        targetPart = "Head",
+        fov = 200,
+        maxDistance = 1000,
+        smoothness = 1,
+        prioritizeClosest = false,
+        wallCheckPrecision = 3,
+        infiniteRange = false,  -- NEW
+        aimBehind = false,      -- NEW
     },
 }
 
@@ -171,7 +179,6 @@ local function FireKnife(tool)
     if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then
         return false
     end
-
     if tick() - lastKnifeThrow < settings.knifeTriggerDelay then
         return false
     end
@@ -194,18 +201,15 @@ local function FireKnife(tool)
             end
             return false
         end
-
         if tick() - chargeStartedAt[tool] < settings.chargeTime then
             return false
         end
-
         chargeStartedAt[tool] = nil
         if type(fsm.Set) == "function" then
             return pcall(fsm.Set, fsm, "Fire")
         end
         return false
     end
-
     return false
 end
 
@@ -221,7 +225,6 @@ local function FireGun(tool)
         end
         return false
     end
-
     if state == "Fire" or state == "Throw" then return false end
     if tick() - lastGunShot < 0.1 then return false end
 
@@ -293,6 +296,7 @@ task.spawn(function()
     end
 end)
 
+-- ===================== AIMBOT =====================
 local function aimbotIsVisible(targetPart, targetModel)
     if not settings.aimbot.wallCheck or not targetModel then return true end
     local origin = Camera.CFrame.Position
@@ -331,25 +335,51 @@ local function aimbotValidTarget(gameChar)
     return true, char, part
 end
 
+-- UPDATED: handles infinite range + aim-behind
 local function aimbotFindTarget()
     local viewportCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local localChar = LocalPlayer.Character
     if not localChar then return nil end
     local localRoot = localChar:FindFirstChild("HumanoidRootPart")
     if not localRoot then return nil end
+
     local best, bestScore = nil, math.huge
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         local valid, char, part = aimbotValidTarget(gameChar)
         if valid then
             local dist = (part.Position - localRoot.Position).Magnitude
-            if dist <= settings.aimbot.maxDistance and aimbotIsVisible(part, char.Model) then
+            local passesDist = settings.aimbot.infiniteRange or dist <= settings.aimbot.maxDistance
+
+            if passesDist and aimbotIsVisible(part, char.Model) then
                 local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
-                if onScreen then
-                    local fovDist = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
-                    if fovDist <= settings.aimbot.fov then
-                        local score = settings.aimbot.prioritizeClosest and dist or fovDist
-                        if score < bestScore then bestScore = score; best = gameChar end
+                local passesFov, score
+
+                if settings.aimbot.aimBehind then
+                    -- 360 mode: ignore onScreen + FOV entirely, score every valid target
+                    passesFov = true
+                    if onScreen then
+                        -- In front: use viewport distance so precision aiming still works
+                        local fovDist = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
+                        score = settings.aimbot.prioritizeClosest and dist or fovDist
+                    else
+                        -- Behind: score by 3D distance + penalty so on-screen targets win ties
+                        score = settings.aimbot.prioritizeClosest and dist or (dist + 500)
                     end
+                else
+                    -- Normal mode: require on-screen + FOV
+                    if onScreen then
+                        local fovDist = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
+                        passesFov = fovDist <= settings.aimbot.fov
+                        score = settings.aimbot.prioritizeClosest and dist or fovDist
+                    else
+                        passesFov = false
+                        score = math.huge
+                    end
+                end
+
+                if passesFov and score < bestScore then
+                    bestScore = score
+                    best = gameChar
                 end
             end
         end
@@ -388,9 +418,7 @@ local function CreateScreenGui()
     sg.IgnoreGuiInset = true
     sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     pcall(function() sg.Parent = game:GetService("CoreGui") end)
-    if not sg.Parent then
-        pcall(function() sg.Parent = PG end)
-    end
+    if not sg.Parent then pcall(function() sg.Parent = PG end) end
     return sg
 end
 
@@ -418,7 +446,6 @@ local function BuildBillboard(esp, gameChar)
     billboard.MaxDistance = math.huge
     billboard.Enabled = false
     billboard.Parent = espScreenGui
-
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, 0, 1, 0)
     label.BackgroundTransparency = 1
@@ -428,7 +455,6 @@ local function BuildBillboard(esp, gameChar)
     label.TextColor3 = Color3.new(1,1,1)
     label.Text = ""
     label.Parent = billboard
-
     esp.billboard = billboard
     esp.label = label
 end
@@ -486,7 +512,6 @@ pcall(function()
         CreateESPForChar(gameChar)
     end
 end)
-
 pcall(function()
     m_GameCharacterController.GameCharacterAdded:Connect(CreateESPForChar)
 end)
@@ -547,7 +572,6 @@ end
 RunService.Heartbeat:Connect(function()
     pcall(function()
         EnsureContainer()
-
         local localChar = LocalPlayer.Character
         local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
         local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
@@ -565,9 +589,7 @@ RunService.Heartbeat:Connect(function()
             local gcPlayer = gameChar.Player
             local char = gameChar.Character
             local model = char and char.Model
-            local isLocal = gcPlayer == LocalPlayer
-
-            if isLocal then
+            if gcPlayer == LocalPlayer then
                 if esp.billboard then esp.billboard.Enabled = false end
                 if esp.highlight then esp.highlight.Enabled = false end
                 continue
@@ -1015,6 +1037,8 @@ UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot
 UI:CreateToggle(aimbotTab, "Wall Check", false, function(v) settings.aimbot.wallCheck = v end)
 UI:CreateToggle(aimbotTab, "Team Check (Enemy Only)", false, function(v) settings.aimbot.teamCheck = v end)
 UI:CreateToggle(aimbotTab, "Prioritize Closest", false, function(v) settings.aimbot.prioritizeClosest = v end)
+UI:CreateToggle(aimbotTab, "Infinite Range", false, function(v) settings.aimbot.infiniteRange = v end)
+UI:CreateToggle(aimbotTab, "Aim Behind (360°)", false, function(v) settings.aimbot.aimBehind = v end)
 UI:CreateDropdown(aimbotTab, "Target Part",
     {"Head","HumanoidRootPart","Torso","UpperTorso","LowerTorso"},
     "Head", function(opt) settings.aimbot.targetPart = opt end)
@@ -1041,4 +1065,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — charge bug fixed (Charge→Throw), knife trigger delay added.")
+print("[SHARP] Loaded — infinite range + aim behind added to aimbot.")
