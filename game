@@ -14,6 +14,7 @@ local targetLocked = nil
 local settings = {
     silentAim = false, triggerBot = false, triggerBotMode = "Crosshair",
     autoShoot = false, autoReload = true, maxCharge = true, infiniteAmmo = false,
+    silentAimWallCheck = true,           -- NEW: prevents silent aim picking targets behind walls
     chargeTime = 1.5,
     knifeTriggerDelay = 1.2,
     ignoreForcefield = true,
@@ -27,6 +28,14 @@ local settings = {
     antiTrap = false,
     trapAvoidRadius = 5,
     trapDangerRadius = 3,
+    trapBarriers = false,                -- NEW: physical barrier system from reference script
+    trapBarrierTypes = {                 -- NEW: per-type barrier toggles
+        BearTrap = true,
+        Goop = true,
+        Curse = true,
+        ShockMine = true,
+        TeleportGate = true,
+    },
     dodgeKnife = false,
     dodgeRadius = 12,
     dodgeReactionTime = 0.25,
@@ -83,9 +92,19 @@ local function IsVisible(head)
     return false
 end
 
-local function GetClosestHead()
-    local mousePos = UserInputService:GetMouseLocation()
-    local closest, closestDist, closestPlayer, closestGameChar = nil, 200, nil, nil
+-- ==========================================================
+--  UPDATED: GetClosestHead(anyDirection, requireVisible)
+--  anyDirection = true  -> considers off-screen enemies too
+--  requireVisible = true -> must not be behind a wall
+-- ==========================================================
+local function GetClosestHead(anyDirection, requireVisible)
+    local closest, closestDist, closestPlayer, closestGameChar = nil, math.huge, nil, nil
+    local localChar = LocalPlayer.Character
+    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
+    if not localRoot then return nil end
+
+    local camCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         if gameChar.Player == LocalPlayer then continue end
         if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
@@ -95,15 +114,27 @@ local function GetClosestHead()
         local model = char.Model
         local head = model:FindFirstChild("Head")
         local humanoid = model:FindFirstChild("Humanoid")
-        if head and humanoid and humanoid.Health > 0 then
-            local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-                if dist < closestDist then
-                    closestDist = dist; closest = head
-                    closestPlayer = gameChar.Player; closestGameChar = gameChar
-                end
-            end
+        if not head or not humanoid or humanoid.Health <= 0 then continue end
+
+        if requireVisible and not IsVisible(head) then continue end
+
+        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+        local score
+        if onScreen then
+            score = (Vector2.new(screenPos.X, screenPos.Y) - camCenter).Magnitude
+        elseif anyDirection then
+            -- Off-screen: rank by 3D distance with a large penalty so on-screen always wins
+            local dist3D = (head.Position - localRoot.Position).Magnitude
+            score = 100000 + dist3D
+        else
+            continue
+        end
+
+        if score < closestDist then
+            closestDist = score
+            closest = head
+            closestPlayer = gameChar.Player
+            closestGameChar = gameChar
         end
     end
     return closest, closestPlayer, closestGameChar
@@ -113,7 +144,8 @@ m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
     if not settings.silentAim and not settings.maxCharge then return end
     if settings.maxCharge then combatEvent.GameAction.Charge = 1 end
     if settings.silentAim then
-        local head = GetClosestHead()
+        -- Silent aim now works regardless of camera direction
+        local head = GetClosestHead(true, settings.silentAimWallCheck)
         if head then
             local throwPos = combatEvent.GameAction.Position
             combatEvent.GameAction.Direction = (head.Position - throwPos).Unit
@@ -245,6 +277,78 @@ local function computeAvoidTarget(myPos, trapPos)
     end
 end
 
+-- ===================== TRAP BARRIERS (from reference script) =====================
+local TRAP_BARRIER_KEYWORDS = {
+    BearTrap = {"beartrap", "bear trap"},
+    Goop = {"goop"},
+    Curse = {"curse"},
+    ShockMine = {"shockmine", "shock mine"},
+    TeleportGate = {"teleportgate", "teleport gate"},
+}
+
+local trapBarrierFolder = Instance.new("Folder")
+trapBarrierFolder.Name = "SharpTrapBarriers"
+trapBarrierFolder.Parent = workspace
+
+local function findTrapTriggerPart(model)
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local lower = part.Name:lower()
+            if lower == "hitdetect" or lower == "trigger" or lower == "touch" or lower == "sensor" then
+                return part
+            end
+        end
+    end
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") and part:FindFirstChildOfClass("TouchInterest") then
+            return part
+        end
+    end
+    return model:FindFirstChild("Root") or model:FindFirstChildOfClass("BasePart")
+end
+
+local function createTrapBarrier(model)
+    local trigger = findTrapTriggerPart(model)
+    if not trigger then return end
+    local barrier = Instance.new("Part")
+    barrier.Name = "SharpBarrier_" .. model.Name
+    barrier.Size = trigger.Size + Vector3.new(3, 3, 3)
+    barrier.CFrame = trigger.CFrame
+    barrier.Anchored = true
+    barrier.CanCollide = true
+    barrier.Transparency = 1
+    barrier.Material = Enum.Material.SmoothPlastic
+    barrier.Parent = trapBarrierFolder
+end
+
+local function updateTrapBarriers()
+    for _, v in pairs(trapBarrierFolder:GetChildren()) do v:Destroy() end
+    if not settings.trapBarriers then return end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        local model = obj:IsA("Model") and obj or (obj:IsA("BasePart") and obj.Parent)
+        if model then
+            local name = model.Name:lower()
+            for key, keywords in pairs(TRAP_BARRIER_KEYWORDS) do
+                if settings.trapBarrierTypes[key] then
+                    for _, kw in ipairs(keywords) do
+                        if name:find(kw, 1, true) then
+                            createTrapBarrier(model)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        pcall(updateTrapBarriers)
+    end
+end)
+
 -- ============ FIRE LOGIC ============
 local chargeStartedAt = {}
 local lastKnifeThrow = 0
@@ -373,9 +477,15 @@ task.spawn(function()
                 shouldFire = IsCrosshairOnEnemy()
             elseif settings.triggerBotMode == "Aimbot" then
                 shouldFire = settings.aimbot.enabled and targetLocked ~= nil
-            else
-                local head = GetClosestHead()
-                shouldFire = head ~= nil and IsVisible(head)
+            elseif settings.triggerBotMode == "Silent Aim" then
+                -- NEW: fires whenever silent aim has a valid visible target
+                -- regardless of where your camera is facing
+                if settings.silentAim then
+                    shouldFire = GetClosestHead(true, true) ~= nil
+                end
+            else -- Proximity: on-screen, visible
+                local head = GetClosestHead(false, true)
+                shouldFire = head ~= nil
             end
             if shouldFire then
                 lastValidTargetTime = tick()
@@ -804,7 +914,8 @@ RunService.Heartbeat:Connect(function()
     end
 
     if settings.targetHighlight then
-        local head, _, gameChar = GetClosestHead()
+        -- Any-direction so off-screen targets are still highlighted (useful for tracking)
+        local head, _, gameChar = GetClosestHead(true, false)
         if gameChar and gameChar.Character and gameChar.Character.IsAlive and gameChar.Character.Model then
             applyTargetHighlight(gameChar.Character.Model)
         else
@@ -1152,7 +1263,7 @@ local visualTab = UI:CreateTab("Visuals")
 UI:CreateSection(combatTab, "Fire Mode")
 UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot = v end)
 UI:CreateDropdown(combatTab, "Triggerbot Mode",
-    {"Crosshair", "Aimbot", "Proximity"}, "Crosshair",
+    {"Crosshair", "Aimbot", "Silent Aim", "Proximity"}, "Crosshair",
     function(opt) settings.triggerBotMode = opt end)
 UI:CreateSlider(combatTab, "Charge Time (÷100 s)", 10, 300, 150, function(v)
     settings.chargeTime = v / 100
@@ -1165,13 +1276,14 @@ UI:CreateToggle(combatTab, "Auto Reload", true, function(v) settings.autoReload 
 UI:CreateToggle(combatTab, "Ignore Forcefield", true, function(v) settings.ignoreForcefield = v end)
 
 UI:CreateSection(combatTab, "Combat")
-UI:CreateToggle(combatTab, "Silent Aim", false, function(v) settings.silentAim = v end)
+UI:CreateToggle(combatTab, "Silent Aim (camera-independent)", false, function(v) settings.silentAim = v end)
+UI:CreateToggle(combatTab, "Silent Aim Wall Check", true, function(v) settings.silentAimWallCheck = v end)
 UI:CreateToggle(combatTab, "Max Charge (force full power)", true, function(v) settings.maxCharge = v end)
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
-UI:CreateSection(combatTab, "Trap Avoidance")
-UI:CreateToggle(combatTab, "Anti-Trap (Avoid Goop/Curse/Traps)", false, function(v)
+UI:CreateSection(combatTab, "Trap Avoidance (Move Out)")
+UI:CreateToggle(combatTab, "Anti-Trap Movement", false, function(v)
     settings.antiTrap = v
 end)
 UI:CreateSlider(combatTab, "Trap Avoid Radius (studs)", 3, 15, 5, function(v)
@@ -1180,6 +1292,14 @@ end)
 UI:CreateSlider(combatTab, "Trap Danger Radius (studs)", 1, 8, 3, function(v)
     settings.trapDangerRadius = v
 end)
+
+UI:CreateSection(combatTab, "Trap Barriers (Block Physics)")
+UI:CreateToggle(combatTab, "Enable Trap Barriers", false, function(v) settings.trapBarriers = v end)
+UI:CreateToggle(combatTab, "Bear Trap Barrier", true, function(v) settings.trapBarrierTypes.BearTrap = v end)
+UI:CreateToggle(combatTab, "Goop Barrier", true, function(v) settings.trapBarrierTypes.Goop = v end)
+UI:CreateToggle(combatTab, "Curse Barrier", true, function(v) settings.trapBarrierTypes.Curse = v end)
+UI:CreateToggle(combatTab, "Shock Mine Barrier", true, function(v) settings.trapBarrierTypes.ShockMine = v end)
+UI:CreateToggle(combatTab, "Teleport Gate Barrier", true, function(v) settings.trapBarrierTypes.TeleportGate = v end)
 
 UI:CreateSection(combatTab, "Dodge")
 UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v)
@@ -1225,4 +1345,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — knife dodge added, trap avoidance, ESP always visible, charge min 0.10s.")
+print("[SHARP] Loaded — silent aim (camera-independent), Silent Aim triggerbot mode, trap barriers.")
