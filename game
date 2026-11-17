@@ -24,6 +24,12 @@ local settings = {
     espTeamColor = Color3.fromRGB(50, 255, 50),
     targetHighlight = false, knifeTracers = false,
     knifeTracerColor = Color3.fromRGB(255, 200, 0),
+    antiTrap = false,
+    trapAvoidRadius = 5,
+    trapDangerRadius = 3,
+    dodgeKnife = false,
+    dodgeRadius = 12,
+    dodgeReactionTime = 0.25,
     aimbot = {
         enabled = false,
         wallCheck = false,
@@ -160,6 +166,83 @@ local function ResolveWeaponType(tool)
         return "gun"
     end
     return nil
+end
+
+-- ===================== TRAP AVOIDANCE HELPERS =====================
+local TRAP_NAME_PATTERNS = {
+    "trap", "goop", "curse", "mine", "shock", "slow", "web", "snare",
+}
+
+local function isTrapPart(part)
+    if not part or not part:IsA("BasePart") then return false end
+    local n = string.lower(part.Name)
+    for _, pattern in ipairs(TRAP_NAME_PATTERNS) do
+        if n:find(pattern) then return true end
+    end
+    return false
+end
+
+local function scanTraps(centerPos, radius)
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+    local excludeList = {}
+    if LocalPlayer.Character then table.insert(excludeList, LocalPlayer.Character) end
+    overlapParams.FilterDescendantsInstances = excludeList
+    local parts = workspace:GetPartBoundsInRadius(centerPos, radius, overlapParams)
+    local traps = {}
+    for _, part in ipairs(parts) do
+        if isTrapPart(part) then
+            table.insert(traps, part)
+        end
+    end
+    return traps
+end
+
+local function getClosestTrap(myPos, traps)
+    local best, bestDist = nil, math.huge
+    for _, t in ipairs(traps) do
+        local d = (t.Position - myPos).Magnitude
+        if d < bestDist then
+            best, bestDist = t, d
+        end
+    end
+    return best, bestDist
+end
+
+local function computeAvoidTarget(myPos, trapPos)
+    local away = Vector3.new(myPos.X - trapPos.X, 0, myPos.Z - trapPos.Z)
+    if away.Magnitude < 0.1 then
+        away = Vector3.new(1, 0, 0)
+    end
+    local awayDir = away.Unit
+
+    local perpA = Vector3.new(-awayDir.Z, 0, awayDir.X)
+    local perpB = Vector3.new(awayDir.Z, 0, -awayDir.X)
+
+    local blendA = (perpA + awayDir * 0.6).Unit
+    local blendB = (perpB + awayDir * 0.6).Unit
+
+    local trapRayParams = RaycastParams.new()
+    trapRayParams.FilterType = Enum.RaycastFilterType.Exclude
+    local excludeList = {}
+    if LocalPlayer.Character then table.insert(excludeList, LocalPlayer.Character) end
+    trapRayParams.FilterDescendantsInstances = excludeList
+
+    local probeDist = 8
+    local origin = myPos + Vector3.new(0, 2.5, 0)
+
+    local function isClear(dir)
+        local hit = workspace:Raycast(origin, dir * probeDist, trapRayParams)
+        return hit == nil
+    end
+
+    if isClear(blendA) then
+        return myPos + blendA * probeDist
+    elseif isClear(blendB) then
+        return myPos + blendB * probeDist
+    else
+        return myPos + awayDir * probeDist
+    end
 end
 
 -- ============ FIRE LOGIC ============
@@ -315,6 +398,106 @@ task.spawn(function()
             TryFire()
         elseif not settings.triggerBot then
             ResetCharges()
+        end
+    end
+end)
+
+-- ===================== TRAP AVOIDANCE LOOP =====================
+RunService.Stepped:Connect(function()
+    if not settings.antiTrap then return end
+
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not hum or not root then return end
+
+    local myPos = root.Position
+    local traps = scanTraps(myPos, settings.trapAvoidRadius)
+    if #traps == 0 then return end
+
+    local closest, dist = getClosestTrap(myPos, traps)
+    if not closest then return end
+    if dist > settings.trapAvoidRadius then return end
+
+    local avoidTarget = computeAvoidTarget(myPos, closest.Position)
+
+    if hum.MoveDirection.Magnitude > 0.1 then
+        hum:MoveTo(avoidTarget)
+    elseif dist < settings.trapDangerRadius then
+        hum:MoveTo(avoidTarget)
+    end
+end)
+
+-- ===================== KNIFE THROW DODGE =====================
+local KNIFE_DODGE_NAMES = { "knife", "thrownknife", "projectile" }
+
+local function isThrownKnife(part)
+    if not part or not part:IsA("BasePart") then return false end
+    local n = string.lower(part.Name)
+    for _, pattern in ipairs(KNIFE_DODGE_NAMES) do
+        if n:find(pattern) then
+            return true
+        end
+    end
+    return false
+end
+
+local dodgeCooldown = 0
+local DODGE_COOLDOWN_TIME = 0.4
+
+RunService.Heartbeat:Connect(function()
+    if not settings.dodgeKnife then return end
+    if tick() - dodgeCooldown < DODGE_COOLDOWN_TIME then return end
+
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not hum or not root then return end
+    if hum.Health <= 0 then return end
+
+    local myPos = root.Position
+
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isThrownKnife(obj) then
+            local velocity = obj.AssemblyLinearVelocity
+            local speed = velocity.Magnitude
+            if speed < 20 then continue end
+
+            local toMe = myPos - obj.Position
+            local distance = toMe.Magnitude
+            if distance > settings.dodgeRadius then continue end
+            if distance < 1 then continue end
+
+            local alignment = velocity.Unit:Dot(toMe.Unit)
+            if alignment > 0.85 then
+                local timeToImpact = distance / speed
+                if timeToImpact <= settings.dodgeReactionTime then
+                    local horizontalVel = Vector3.new(velocity.X, 0, velocity.Z)
+                    if horizontalVel.Magnitude < 0.1 then continue end
+                    local perp = Vector3.new(-horizontalVel.Z, 0, horizontalVel.X).Unit
+
+                    local rayParams2 = RaycastParams.new()
+                    rayParams2.FilterType = Enum.RaycastFilterType.Exclude
+                    rayParams2.FilterDescendantsInstances = {char}
+                    local dodgeOrigin = myPos + Vector3.new(0, 2.5, 0)
+                    local hitA = workspace:Raycast(dodgeOrigin, perp * 12, rayParams2)
+                    local hitB = workspace:Raycast(dodgeOrigin, -perp * 12, rayParams2)
+
+                    local dodgeDir = perp
+                    if hitA and not hitB then
+                        dodgeDir = -perp
+                    elseif hitA and hitB then
+                        continue
+                    end
+
+                    local dodgeTarget = myPos + dodgeDir * 10
+                    hum:MoveTo(dodgeTarget)
+                    dodgeCooldown = tick()
+                    return
+                end
+            end
         end
     end
 end)
@@ -987,6 +1170,28 @@ UI:CreateToggle(combatTab, "Max Charge (force full power)", true, function(v) se
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
+UI:CreateSection(combatTab, "Trap Avoidance")
+UI:CreateToggle(combatTab, "Anti-Trap (Avoid Goop/Curse/Traps)", false, function(v)
+    settings.antiTrap = v
+end)
+UI:CreateSlider(combatTab, "Trap Avoid Radius (studs)", 3, 15, 5, function(v)
+    settings.trapAvoidRadius = v
+end)
+UI:CreateSlider(combatTab, "Trap Danger Radius (studs)", 1, 8, 3, function(v)
+    settings.trapDangerRadius = v
+end)
+
+UI:CreateSection(combatTab, "Dodge")
+UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v)
+    settings.dodgeKnife = v
+end)
+UI:CreateSlider(combatTab, "Dodge Radius (studs)", 5, 30, 12, function(v)
+    settings.dodgeRadius = v
+end)
+UI:CreateSlider(combatTab, "Dodge Reaction Time (÷100 s)", 10, 50, 25, function(v)
+    settings.dodgeReactionTime = v / 100
+end)
+
 UI:CreateSection(aimbotTab, "Aimbot")
 UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
 UI:CreateToggle(aimbotTab, "Wall Check", false, function(v) settings.aimbot.wallCheck = v end)
@@ -1020,4 +1225,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — knife throws fixed, ESP always visible, charge min 0.10s.")
+print("[SHARP] Loaded — knife dodge added, trap avoidance, ESP always visible, charge min 0.10s.")
