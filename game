@@ -162,7 +162,7 @@ local function ResolveWeaponType(tool)
     return nil
 end
 
--- ============ FIRE LOGIC (charge-aware + knife-only delay) ============
+-- ============ FIRE LOGIC ============
 local chargeStartedAt = {}
 local lastKnifeThrow = 0
 local lastGunShot = 0
@@ -171,29 +171,18 @@ local function ResetCharges()
     for k in pairs(chargeStartedAt) do chargeStartedAt[k] = nil end
 end
 
--- Knife FSM states (from your testing):
---   Idle       -> knife holstered / no charge. Need to start a charge.
---   ChargeHold -> actively charging. Wait chargeTime, then "Throw".
---   Charge     -> charged and ready. "Throw" immediately.
---   Throw      -> currently animating a throw. Do nothing.
---   Fire       -> STAB (melee hitbox), not a throw. Never trigger this.
---   Equip      -> knife being pulled out. Do nothing.
---   Preview    -> pre-throw animation. Do nothing.
 local function FireKnife(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or "")
 
-    -- Currently animating: don't interrupt
     if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then
         return false
     end
-    -- Rate limit between throws
     if tick() - lastKnifeThrow < settings.knifeTriggerDelay then
         return false
     end
 
-    -- Case 1: already at full charge -> throw immediately
     if state == "Charge" then
         chargeStartedAt[tool] = nil
         if type(fsm.Set) == "function" then
@@ -204,7 +193,6 @@ local function FireKnife(tool)
         return false
     end
 
-    -- Case 2: idle or charging -> start timer, then THROW (not stab)
     if state == "ChargeHold" or state == "Idle" then
         if not chargeStartedAt[tool] then
             chargeStartedAt[tool] = tick()
@@ -213,11 +201,9 @@ local function FireKnife(tool)
             end
             return false
         end
-        -- Still charging -> wait
         if tick() - chargeStartedAt[tool] < settings.chargeTime then
             return false
         end
-        -- Charge complete -> THROW (was incorrectly "Fire" = stab)
         chargeStartedAt[tool] = nil
         if type(fsm.Set) == "function" then
             local ok = pcall(fsm.Set, fsm, "Throw")
@@ -292,7 +278,6 @@ local function IsCrosshairOnEnemy()
     return false
 end
 
--- Grace period so brief crosshair flickers don't reset the charge mid-wind-up
 local CHARGE_GRACE_PERIOD = 0.3
 local lastValidTargetTime = 0
 
@@ -313,7 +298,6 @@ task.spawn(function()
                 lastValidTargetTime = tick()
                 TryFire()
             else
-                -- Only reset the charge if we've been off-target for more than grace
                 if tick() - lastValidTargetTime > CHARGE_GRACE_PERIOD then
                     ResetCharges()
                 end
@@ -441,284 +425,221 @@ end
 RunService.RenderStepped:Connect(aimbotUpdate)
 Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
 
--- ===================== BULLETPROOF ESP =====================
-local espScreenGui = nil
-local espObjects = {}
+-- ===================== ESP (MM2-style, always re-enables each frame) =====================
+local espFolder = Instance.new("Folder")
+espFolder.Name = "SharpESPData"
+pcall(function() espFolder.Parent = game:GetService("CoreGui") end)
+if not espFolder.Parent then espFolder.Parent = PG end
 
-local function CreateScreenGui()
-    local sg = Instance.new("ScreenGui")
-    sg.Name = "SharpESPContainer"
-    sg.ResetOnSpawn = false
-    sg.IgnoreGuiInset = true
-    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    pcall(function() sg.Parent = game:GetService("CoreGui") end)
-    if not sg.Parent then pcall(function() sg.Parent = PG end) end
-    return sg
+local chamFolder = Instance.new("Folder")
+chamFolder.Name = "SharpChamData"
+pcall(function() chamFolder.Parent = game:GetService("CoreGui") end)
+if not chamFolder.Parent then chamFolder.Parent = PG end
+
+local espData = {}
+
+local function destroyESP(gameChar)
+    local data = espData[gameChar]
+    if not data then return end
+    if data.billboard then pcall(function() data.billboard:Destroy() end) end
+    if data.highlight then pcall(function() data.highlight:Destroy() end) end
+    espData[gameChar] = nil
 end
 
-local function EnsureContainer()
-    if not espScreenGui or not espScreenGui.Parent then
-        if espScreenGui then pcall(function() espScreenGui:Destroy() end) end
-        espScreenGui = CreateScreenGui()
-        for _, esp in pairs(espObjects) do
-            if esp.billboard and esp.billboard.Parent == nil then
-                pcall(function() esp.billboard.Parent = espScreenGui end)
-            end
-            if esp.highlight and esp.highlight.Parent == nil then
-                pcall(function() esp.highlight.Parent = espScreenGui end)
-            end
-        end
-    end
-end
+local function ensureESP(gameChar)
+    if espData[gameChar] then return espData[gameChar] end
+    local data = { head = nil, model = nil }
 
-local function BuildBillboard(esp, gameChar)
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "SharpESP_" .. (gameChar.Player and gameChar.Player.Name or "unknown")
-    billboard.Size = UDim2.new(0, 220, 0, 36)
+    billboard.Size = UDim2.new(0, 200, 0, 28)
     billboard.StudsOffset = Vector3.new(0, 2.5, 0)
     billboard.AlwaysOnTop = true
     billboard.MaxDistance = math.huge
     billboard.Enabled = false
-    billboard.Parent = espScreenGui
+    billboard.Parent = espFolder
+    data.billboard = billboard
+
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, 0, 1, 0)
     label.BackgroundTransparency = 1
     label.TextStrokeTransparency = 0
     label.Font = Enum.Font.GothamBold
     label.TextSize = 14
-    label.TextColor3 = Color3.new(1,1,1)
+    label.TextColor3 = Color3.new(1, 1, 1)
     label.Text = ""
     label.Parent = billboard
-    esp.billboard = billboard
-    esp.label = label
-end
+    data.label = label
 
-local function BuildHighlight(esp, gameChar)
     local highlight = Instance.new("Highlight")
-    highlight.Name = "SharpChams_" .. (gameChar.Player and gameChar.Player.Name or "unknown")
-    highlight.FillTransparency = 0.5
-    highlight.OutlineColor = Color3.new(1,1,1)
+    highlight.Name = "SharpCham_" .. (gameChar.Player and gameChar.Player.Name or "unknown")
+    highlight.FillTransparency = 0.55
     highlight.OutlineTransparency = 0
     highlight.Enabled = false
-    highlight.Parent = espScreenGui
-    esp.highlight = highlight
+    highlight.Parent = chamFolder
+    data.highlight = highlight
+
+    espData[gameChar] = data
+    return data
 end
 
-local function CreateESPForChar(gameChar)
-    if not gameChar then return end
-    if gameChar.Player == LocalPlayer then return end
-    if espObjects[gameChar] then return end
-    EnsureContainer()
-    local esp = { lastModel = nil, lastAdornee = nil }
-    BuildBillboard(esp, gameChar)
-    BuildHighlight(esp, gameChar)
-    espObjects[gameChar] = esp
-end
-
-local function EnsureESPEntry(gameChar, esp)
-    if not esp.billboard or not esp.billboard.Parent then
-        pcall(function() if esp.billboard then esp.billboard:Destroy() end end)
-        BuildBillboard(esp, gameChar)
-    end
-    if not esp.label or not esp.label.Parent then
-        if esp.billboard then
-            local label = Instance.new("TextLabel")
-            label.Size = UDim2.new(1, 0, 1, 0)
-            label.BackgroundTransparency = 1
-            label.TextStrokeTransparency = 0
-            label.Font = Enum.Font.GothamBold
-            label.TextSize = 14
-            label.TextColor3 = Color3.new(1,1,1)
-            label.Text = ""
-            label.Parent = esp.billboard
-            esp.label = label
-        end
-    end
-    if not esp.highlight or not esp.highlight.Parent then
-        pcall(function() if esp.highlight then esp.highlight:Destroy() end end)
-        BuildHighlight(esp, gameChar)
-    end
-end
-
-EnsureContainer()
 pcall(function()
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
-        CreateESPForChar(gameChar)
+        if gameChar.Player and gameChar.Player ~= LocalPlayer then
+            ensureESP(gameChar)
+        end
     end
 end)
+
 pcall(function()
-    m_GameCharacterController.GameCharacterAdded:Connect(CreateESPForChar)
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-    for gc in pairs(espObjects) do
-        if gc.Player == player then
-            local esp = espObjects[gc]
-            pcall(function() if esp.billboard then esp.billboard:Destroy() end end)
-            pcall(function() if esp.highlight then esp.highlight:Destroy() end end)
-            espObjects[gc] = nil
-        end
-    end
-end)
-
-local currentTargetHighlight, lastTargetModel = nil, nil
-local function ClearTargetHighlight()
-    if currentTargetHighlight then pcall(function() currentTargetHighlight:Destroy() end); currentTargetHighlight = nil end
-    lastTargetModel = nil
-end
-local function ApplyTargetHighlight(model)
-    if lastTargetModel == model then return end
-    ClearTargetHighlight()
-    local h = Instance.new("Highlight")
-    h.FillColor = Color3.fromRGB(255,50,50)
-    h.OutlineColor = Color3.new(1,1,1)
-    h.FillTransparency = 0.5
-    h.OutlineTransparency = 0
-    h.Adornee = model
-    h.Parent = espScreenGui
-    currentTargetHighlight = h
-    lastTargetModel = model
-end
-
-local original_NewCaster = m_MadworkCaster.NewCaster
-m_MadworkCaster.NewCaster = function(params)
-    local caster = original_NewCaster(params)
-    if settings.knifeTracers and Drawing then
-        local line = Drawing.new("Line")
-        line.Thickness = 2
-        line.Color = settings.knifeTracerColor
-        line.Transparency = 0.3
-        line.Visible = false
-        local startPos = params.Position
-        caster:OnUpdate(function()
-            if not settings.knifeTracers then line.Visible = false return end
-            local s, on1 = Camera:WorldToViewportPoint(startPos)
-            local e, on2 = Camera:WorldToViewportPoint(caster.Position)
-            line.From = Vector2.new(s.X, s.Y)
-            line.To = Vector2.new(e.X, e.Y)
-            line.Visible = on1 and on2
-        end)
-        caster:OnSolve(function() line:Remove() end)
-    end
-    return caster
-end
-
-RunService.Heartbeat:Connect(function()
-    pcall(function()
-        EnsureContainer()
-        local localChar = LocalPlayer.Character
-        local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
-        local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
-        local localAlive = localHum and localHum.Health > 0
-
-        for gameChar, esp in pairs(espObjects) do
-            EnsureESPEntry(gameChar, esp)
-
-            if not settings.espEnabled then
-                if esp.billboard then esp.billboard.Enabled = false end
-                if esp.highlight then esp.highlight.Enabled = false end
-                continue
-            end
-
-            local gcPlayer = gameChar.Player
-            local char = gameChar.Character
-            local model = char and char.Model
-            if gcPlayer == LocalPlayer then
-                if esp.billboard then esp.billboard.Enabled = false end
-                if esp.highlight then esp.highlight.Enabled = false end
-                continue
-            end
-
-            local show = false
-            if not localAlive then
-                show = true
-            else
-                local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
-                if ok and rel then
-                    show = true
-                    if settings.espEnemyOnly and rel ~= "Enemy" then show = false end
-                    if settings.espTeamOnly and rel ~= "Friendly" then show = false end
-                else
-                    show = true
-                end
-                if show and localRoot and char and char.RootPart then
-                    local dist = (char.RootPart.Position - localRoot.Position).Magnitude
-                    if dist > settings.espMaxDistance then show = false end
-                end
-            end
-
-            if not show or not char or not char.IsAlive or not model then
-                if esp.billboard then esp.billboard.Enabled = false end
-                if esp.highlight then esp.highlight.Enabled = false end
-                continue
-            end
-
-            local head = model:FindFirstChild("Head")
-            if not head then
-                if esp.billboard then esp.billboard.Enabled = false end
-                if esp.highlight then esp.highlight.Enabled = false end
-                continue
-            end
-
-            if esp.lastModel ~= model or esp.lastAdornee ~= head then
-                esp.billboard.Adornee = head
-                esp.highlight.Adornee = model
-                esp.lastModel = model
-                esp.lastAdornee = head
-            end
-
-            local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
-            local color = (ok and rel == "Enemy") and settings.espEnemyColor or settings.espTeamColor
-            local hp = gameChar.DamageReceiver and gameChar.DamageReceiver.Health or 0
-            local hpMax = gameChar.DamageReceiver and gameChar.DamageReceiver.MaxHealth or 100
-            local dist = 0
-            if localAlive and localRoot and char.RootPart then
-                dist = math.floor((char.RootPart.Position - localRoot.Position).Magnitude)
-            end
-
-            local parts = {}
-            if settings.espNames and gcPlayer then table.insert(parts, gcPlayer.Name) end
-            if settings.espDistance then table.insert(parts, localAlive and (dist .. "m") or "?m") end
-            if settings.espHealth then table.insert(parts, math.floor(hp) .. "/" .. math.floor(hpMax) .. "hp") end
-
-            esp.label.Text = table.concat(parts, " | ")
-            esp.label.TextColor3 = color
-            esp.billboard.Enabled = true
-
-            if settings.espChams then
-                esp.highlight.FillColor = color
-                esp.highlight.OutlineColor = color
-                esp.highlight.Enabled = true
-            else
-                esp.highlight.Enabled = false
-            end
-        end
-
-        if settings.targetHighlight then
-            local head, _, gameChar = GetClosestHead()
-            if gameChar and gameChar.Character and gameChar.Character.IsAlive then
-                ApplyTargetHighlight(gameChar.Character.Model)
-            else
-                ClearTargetHighlight()
-            end
-        else
-            ClearTargetHighlight()
+    m_GameCharacterController.GameCharacterAdded:Connect(function(gameChar)
+        if gameChar and gameChar.Player and gameChar.Player ~= LocalPlayer then
+            ensureESP(gameChar)
         end
     end)
 end)
 
+Players.PlayerRemoving:Connect(function(player)
+    for gc, _ in pairs(espData) do
+        if gc.Player == player then
+            destroyESP(gc)
+        end
+    end
+end)
+
+local currentTargetHighlight = nil
+local currentTargetModel = nil
+
+local function clearTargetHighlight()
+    if currentTargetHighlight then
+        pcall(function() currentTargetHighlight:Destroy() end)
+        currentTargetHighlight = nil
+    end
+    currentTargetModel = nil
+end
+
+local function applyTargetHighlight(model)
+    if currentTargetModel == model then return end
+    clearTargetHighlight()
+    if not model then return end
+    local h = Instance.new("Highlight")
+    h.FillColor = Color3.fromRGB(255, 50, 50)
+    h.FillTransparency = 0.5
+    h.OutlineColor = Color3.new(1, 1, 1)
+    h.OutlineTransparency = 0
+    h.Adornee = model
+    h.Parent = chamFolder
+    currentTargetHighlight = h
+    currentTargetModel = model
+end
+
+RunService.Heartbeat:Connect(function()
+    if not settings.espEnabled then
+        for _, data in pairs(espData) do
+            if data.billboard then data.billboard.Enabled = false end
+            if data.highlight then data.highlight.Enabled = false end
+        end
+        clearTargetHighlight()
+        return
+    end
+
+    local localChar = LocalPlayer.Character
+    local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
+    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
+    local localAlive = localHum and localHum.Health > 0
+
+    for gameChar, data in pairs(espData) do
+        local gcPlayer = gameChar.Player
+
+        if gcPlayer == LocalPlayer then
+            if data.billboard then data.billboard.Enabled = false end
+            if data.highlight then data.highlight.Enabled = false end
+            continue
+        end
+
+        local char = gameChar.Character
+        local model = char and char.Model
+        local head = model and model:FindFirstChild("Head")
+        local hum = model and model:FindFirstChildOfClass("Humanoid")
+        local alive = char and char.IsAlive and hum and hum.Health > 0
+
+        if not model or not head or not alive then
+            if data.billboard then data.billboard.Enabled = false end
+            if data.highlight then data.highlight.Enabled = false end
+            continue
+        end
+
+        if data.model ~= model or data.head ~= head then
+            data.billboard.Adornee = head
+            data.highlight.Adornee = model
+            data.model = model
+            data.head = head
+        end
+
+        local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
+        local isEnemy = (ok and rel == "Enemy")
+
+        local shouldShow = true
+        if settings.espEnemyOnly and not isEnemy then shouldShow = false end
+        if settings.espTeamOnly and isEnemy then shouldShow = false end
+
+        if shouldShow and localRoot and char.RootPart then
+            local dist = (char.RootPart.Position - localRoot.Position).Magnitude
+            if dist > settings.espMaxDistance then shouldShow = false end
+        end
+
+        if not shouldShow then
+            if data.billboard then data.billboard.Enabled = false end
+            if data.highlight then data.highlight.Enabled = false end
+            continue
+        end
+
+        local color = isEnemy and settings.espEnemyColor or settings.espTeamColor
+        local hp = gameChar.DamageReceiver and gameChar.DamageReceiver.Health or (hum and hum.Health) or 0
+        local hpMax = gameChar.DamageReceiver and gameChar.DamageReceiver.MaxHealth or (hum and hum.MaxHealth) or 100
+        local dist = 0
+        if localAlive and localRoot and char.RootPart then
+            dist = math.floor((char.RootPart.Position - localRoot.Position).Magnitude)
+        end
+
+        local parts = {}
+        if settings.espNames and gcPlayer then table.insert(parts, gcPlayer.Name) end
+        if settings.espDistance then table.insert(parts, dist .. "m") end
+        if settings.espHealth then table.insert(parts, math.floor(hp) .. "/" .. math.floor(hpMax) .. "hp") end
+
+        data.label.Text = table.concat(parts, " | ")
+        data.label.TextColor3 = color
+        data.billboard.Enabled = true
+
+        if settings.espChams then
+            data.highlight.FillColor = color
+            data.highlight.OutlineColor = color
+            data.highlight.Enabled = true
+        else
+            data.highlight.Enabled = false
+        end
+    end
+
+    if settings.targetHighlight then
+        local head, _, gameChar = GetClosestHead()
+        if gameChar and gameChar.Character and gameChar.Character.IsAlive and gameChar.Character.Model then
+            applyTargetHighlight(gameChar.Character.Model)
+        else
+            clearTargetHighlight()
+        end
+    else
+        clearTargetHighlight()
+    end
+end)
+
 task.spawn(function()
     while true do
-        task.wait(0.3)
+        task.wait(0.5)
         pcall(function()
-            EnsureContainer()
             for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
-                if not espObjects[gameChar] and gameChar.Player and gameChar.Player ~= LocalPlayer then
-                    CreateESPForChar(gameChar)
+                if gameChar.Player and gameChar.Player ~= LocalPlayer and not espData[gameChar] then
+                    ensureESP(gameChar)
                 end
-            end
-            for gameChar, esp in pairs(espObjects) do
-                EnsureESPEntry(gameChar, esp)
             end
         end)
     end
@@ -1050,7 +971,7 @@ UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot 
 UI:CreateDropdown(combatTab, "Triggerbot Mode",
     {"Crosshair", "Aimbot", "Proximity"}, "Crosshair",
     function(opt) settings.triggerBotMode = opt end)
-UI:CreateSlider(combatTab, "Charge Time (÷100 s)", 30, 300, 150, function(v)
+UI:CreateSlider(combatTab, "Charge Time (÷100 s)", 10, 300, 150, function(v)
     settings.chargeTime = v / 100
 end)
 UI:CreateSlider(combatTab, "Knife Trigger Delay (÷100 s)", 50, 300, 120, function(v)
@@ -1095,8 +1016,8 @@ UI:CreateSection(visualTab, "ESP Colors")
 UI:CreateColorPicker(visualTab, "Enemy Color", Color3.fromRGB(255,50,50), function(c) settings.espEnemyColor = c end)
 UI:CreateColorPicker(visualTab, "Team Color", Color3.fromRGB(50,255,50), function(c) settings.espTeamColor = c end)
 UI:CreateSection(visualTab, "World")
-UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targetHighlight = v; if not v then ClearTargetHighlight() end end)
+UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targetHighlight = v; if not v then clearTargetHighlight() end end)
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — knife throws fixed (Charge → Throw, not Fire/stab); grace period on charge reset.")
+print("[SHARP] Loaded — knife throws fixed, ESP always visible, charge min 0.10s.")
