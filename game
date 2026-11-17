@@ -34,8 +34,8 @@ local settings = {
         smoothness = 1,
         prioritizeClosest = false,
         wallCheckPrecision = 3,
-        infiniteRange = false,  -- NEW
-        aimBehind = false,      -- NEW
+        infiniteRange = false,
+        aimBehind = false,
     },
 }
 
@@ -171,28 +171,40 @@ local function ResetCharges()
     for k in pairs(chargeStartedAt) do chargeStartedAt[k] = nil end
 end
 
+-- Knife FSM states (from your testing):
+--   Idle       -> knife holstered / no charge. Need to start a charge.
+--   ChargeHold -> actively charging. Wait chargeTime, then "Throw".
+--   Charge     -> charged and ready. "Throw" immediately.
+--   Throw      -> currently animating a throw. Do nothing.
+--   Fire       -> STAB (melee hitbox), not a throw. Never trigger this.
+--   Equip      -> knife being pulled out. Do nothing.
+--   Preview    -> pre-throw animation. Do nothing.
 local function FireKnife(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or "")
 
+    -- Currently animating: don't interrupt
     if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then
         return false
     end
+    -- Rate limit between throws
     if tick() - lastKnifeThrow < settings.knifeTriggerDelay then
         return false
     end
 
+    -- Case 1: already at full charge -> throw immediately
     if state == "Charge" then
         chargeStartedAt[tool] = nil
-        local ok = false
         if type(fsm.Set) == "function" then
-            ok = pcall(fsm.Set, fsm, "Throw")
+            local ok = pcall(fsm.Set, fsm, "Throw")
+            if ok then lastKnifeThrow = tick() end
+            return ok
         end
-        if ok then lastKnifeThrow = tick() end
-        return ok
+        return false
     end
 
+    -- Case 2: idle or charging -> start timer, then THROW (not stab)
     if state == "ChargeHold" or state == "Idle" then
         if not chargeStartedAt[tool] then
             chargeStartedAt[tool] = tick()
@@ -201,15 +213,20 @@ local function FireKnife(tool)
             end
             return false
         end
+        -- Still charging -> wait
         if tick() - chargeStartedAt[tool] < settings.chargeTime then
             return false
         end
+        -- Charge complete -> THROW (was incorrectly "Fire" = stab)
         chargeStartedAt[tool] = nil
         if type(fsm.Set) == "function" then
-            return pcall(fsm.Set, fsm, "Fire")
+            local ok = pcall(fsm.Set, fsm, "Throw")
+            if ok then lastKnifeThrow = tick() end
+            return ok
         end
         return false
     end
+
     return false
 end
 
@@ -275,24 +292,46 @@ local function IsCrosshairOnEnemy()
     return false
 end
 
+-- Grace period so brief crosshair flickers don't reset the charge mid-wind-up
+local CHARGE_GRACE_PERIOD = 0.3
+local lastValidTargetTime = 0
+
 task.spawn(function()
     while true do
         task.wait(0.05)
         if settings.triggerBot then
             local shouldFire = false
-            if settings.triggerBotMode == "Crosshair" then shouldFire = IsCrosshairOnEnemy()
-            elseif settings.triggerBotMode == "Aimbot" then shouldFire = settings.aimbot.enabled and targetLocked ~= nil
-            else local head = GetClosestHead(); shouldFire = head ~= nil and IsVisible(head) end
-            if shouldFire then TryFire() else ResetCharges() end
-        else ResetCharges() end
+            if settings.triggerBotMode == "Crosshair" then
+                shouldFire = IsCrosshairOnEnemy()
+            elseif settings.triggerBotMode == "Aimbot" then
+                shouldFire = settings.aimbot.enabled and targetLocked ~= nil
+            else
+                local head = GetClosestHead()
+                shouldFire = head ~= nil and IsVisible(head)
+            end
+            if shouldFire then
+                lastValidTargetTime = tick()
+                TryFire()
+            else
+                -- Only reset the charge if we've been off-target for more than grace
+                if tick() - lastValidTargetTime > CHARGE_GRACE_PERIOD then
+                    ResetCharges()
+                end
+            end
+        else
+            ResetCharges()
+        end
     end
 end)
 
 task.spawn(function()
     while true do
         task.wait(0.05)
-        if settings.autoShoot then TryFire()
-        else if not settings.triggerBot then ResetCharges() end end
+        if settings.autoShoot then
+            TryFire()
+        elseif not settings.triggerBot then
+            ResetCharges()
+        end
     end
 end)
 
@@ -335,7 +374,6 @@ local function aimbotValidTarget(gameChar)
     return true, char, part
 end
 
--- UPDATED: handles infinite range + aim-behind
 local function aimbotFindTarget()
     local viewportCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local localChar = LocalPlayer.Character
@@ -355,18 +393,14 @@ local function aimbotFindTarget()
                 local passesFov, score
 
                 if settings.aimbot.aimBehind then
-                    -- 360 mode: ignore onScreen + FOV entirely, score every valid target
                     passesFov = true
                     if onScreen then
-                        -- In front: use viewport distance so precision aiming still works
                         local fovDist = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
                         score = settings.aimbot.prioritizeClosest and dist or fovDist
                     else
-                        -- Behind: score by 3D distance + penalty so on-screen targets win ties
                         score = settings.aimbot.prioritizeClosest and dist or (dist + 500)
                     end
                 else
-                    -- Normal mode: require on-screen + FOV
                     if onScreen then
                         local fovDist = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
                         passesFov = fovDist <= settings.aimbot.fov
@@ -1065,4 +1099,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — infinite range + aim behind added to aimbot.")
+print("[SHARP] Loaded — knife throws fixed (Charge → Throw, not Fire/stab); grace period on charge reset.")
