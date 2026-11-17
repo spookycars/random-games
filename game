@@ -11,16 +11,20 @@ local PG = LocalPlayer:WaitForChild("PlayerGui")
 
 local targetLocked = nil
 
+-- ============================================================
+--  SAFE DEFAULT SETTINGS — everything disabled
+--  Do NOT enable anything unless you accept the ban risk.
+-- ============================================================
 local settings = {
     silentAim = false, triggerBot = false, triggerBotMode = "Crosshair",
-    autoShoot = false, autoReload = true, maxCharge = true, infiniteAmmo = false,
-    silentAimWallCheck = true,
-    instantFireRate = false,             -- NEW: patches FSM so Fire/Throw/Reload are instant
+    autoShoot = false, autoReload = false, maxCharge = false, infiniteAmmo = false,
+    silentAimWallCheck = false,
+    instantFireRate = false,
     chargeTime = 1.5,
     knifeTriggerDelay = 1.2,
-    ignoreForcefield = true,
+    ignoreForcefield = false,
     espEnabled = false, espEnemyOnly = false, espTeamOnly = false,
-    espNames = true, espDistance = true, espHealth = true, espChams = false,
+    espNames = false, espDistance = false, espHealth = false, espChams = false,
     espMaxDistance = 1000,
     espEnemyColor = Color3.fromRGB(255, 50, 50),
     espTeamColor = Color3.fromRGB(50, 255, 50),
@@ -31,11 +35,11 @@ local settings = {
     trapDangerRadius = 3,
     trapBarriers = false,
     trapBarrierTypes = {
-        BearTrap = true,
-        Goop = true,
-        Curse = true,
-        ShockMine = true,
-        TeleportGate = true,
+        BearTrap = false,
+        Goop = false,
+        Curse = false,
+        ShockMine = false,
+        TeleportGate = false,
     },
     dodgeKnife = false,
     dodgeRadius = 12,
@@ -94,9 +98,6 @@ local function IsVisible(head)
     return false
 end
 
--- ==========================================================
---  UPDATED: GetClosestHead(anyDirection, requireVisible)
--- ==========================================================
 local function GetClosestHead(anyDirection, requireVisible)
     local closest, closestDist, closestPlayer, closestGameChar = nil, math.huge, nil, nil
     local localChar = LocalPlayer.Character
@@ -329,7 +330,7 @@ local function computeAvoidTarget(myPos, trapPos)
     end
 end
 
--- ===================== TRAP BARRIERS (from reference script) =====================
+-- ===================== TRAP BARRIERS =====================
 local TRAP_BARRIER_KEYWORDS = {
     BearTrap = {"beartrap", "bear trap"},
     Goop = {"goop"},
@@ -419,9 +420,6 @@ local function FireKnife(tool)
         return false
     end
 
-    -- ===== INSTANT MAX-CHARGE THROW =====
-    -- When instantFireRate + maxCharge are both on, skip charge-hold wait.
-    -- Charge = 1 is forced in OnLocalEvent so the throw is full power.
     if settings.instantFireRate and settings.maxCharge then
         if tick() - lastKnifeThrow < 0.15 then return false end
         if state == "Idle" or state == "ChargeHold" or state == "Charge" then
@@ -437,7 +435,6 @@ local function FireKnife(tool)
         return false
     end
 
-    -- ===== Normal charge-hold mode =====
     if tick() - lastKnifeThrow < settings.knifeTriggerDelay then
         return false
     end
@@ -489,7 +486,6 @@ local function FireGun(tool)
     end
     if state == "Fire" or state == "Throw" then return false end
 
-    -- In instant mode the Fire state has Duration 0; only a tiny safety gate remains.
     local cooldown = settings.instantFireRate and 0.05 or 0.1
     if tick() - lastGunShot < cooldown then return false end
 
@@ -556,7 +552,7 @@ task.spawn(function()
                 if settings.silentAim then
                     shouldFire = GetClosestHead(true, true) ~= nil
                 end
-            else -- Proximity: on-screen, visible
+            else
                 local head = GetClosestHead(false, true)
                 shouldFire = head ~= nil
             end
@@ -791,7 +787,7 @@ end
 RunService.RenderStepped:Connect(aimbotUpdate)
 Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
 
--- ===================== ESP (MM2-style, always re-enables each frame) =====================
+-- ===================== ESP =====================
 local espFolder = Instance.new("Folder")
 espFolder.Name = "SharpESPData"
 pcall(function() espFolder.Parent = game:GetService("CoreGui") end)
@@ -1326,7 +1322,7 @@ function Library:CreateButton(parent, text, callback)
     return b
 end
 
--- ===================== BUILD UI =====================
+-- ===================== BUILD UI (all toggles default OFF) =====================
 local UI = Library.new()
 local combatTab = UI:CreateTab("Combat")
 local aimbotTab = UI:CreateTab("Aimbot")
@@ -1344,13 +1340,13 @@ UI:CreateSlider(combatTab, "Knife Trigger Delay (÷100 s)", 50, 300, 120, functi
     settings.knifeTriggerDelay = v / 100
 end)
 UI:CreateToggle(combatTab, "Auto Shoot (blind spam)", false, function(v) settings.autoShoot = v end)
-UI:CreateToggle(combatTab, "Auto Reload", true, function(v) settings.autoReload = v end)
-UI:CreateToggle(combatTab, "Ignore Forcefield", true, function(v) settings.ignoreForcefield = v end)
+UI:CreateToggle(combatTab, "Auto Reload", false, function(v) settings.autoReload = v end)
+UI:CreateToggle(combatTab, "Ignore Forcefield", false, function(v) settings.ignoreForcefield = v end)
 
 UI:CreateSection(combatTab, "Combat")
 UI:CreateToggle(combatTab, "Silent Aim (camera-independent)", false, function(v) settings.silentAim = v end)
-UI:CreateToggle(combatTab, "Silent Aim Wall Check", true, function(v) settings.silentAimWallCheck = v end)
-UI:CreateToggle(combatTab, "Max Charge (force full power)", true, function(v) settings.maxCharge = v end)
+UI:CreateToggle(combatTab, "Silent Aim Wall Check", false, function(v) settings.silentAimWallCheck = v end)
+UI:CreateToggle(combatTab, "Max Charge (force full power)", false, function(v) settings.maxCharge = v end)
 UI:CreateToggle(combatTab, "Instant Fire Rate (FSM patch)", false, function(v)
     settings.instantFireRate = v
 end)
@@ -1370,11 +1366,11 @@ end)
 
 UI:CreateSection(combatTab, "Trap Barriers (Block Physics)")
 UI:CreateToggle(combatTab, "Enable Trap Barriers", false, function(v) settings.trapBarriers = v end)
-UI:CreateToggle(combatTab, "Bear Trap Barrier", true, function(v) settings.trapBarrierTypes.BearTrap = v end)
-UI:CreateToggle(combatTab, "Goop Barrier", true, function(v) settings.trapBarrierTypes.Goop = v end)
-UI:CreateToggle(combatTab, "Curse Barrier", true, function(v) settings.trapBarrierTypes.Curse = v end)
-UI:CreateToggle(combatTab, "Shock Mine Barrier", true, function(v) settings.trapBarrierTypes.ShockMine = v end)
-UI:CreateToggle(combatTab, "Teleport Gate Barrier", true, function(v) settings.trapBarrierTypes.TeleportGate = v end)
+UI:CreateToggle(combatTab, "Bear Trap Barrier", false, function(v) settings.trapBarrierTypes.BearTrap = v end)
+UI:CreateToggle(combatTab, "Goop Barrier", false, function(v) settings.trapBarrierTypes.Goop = v end)
+UI:CreateToggle(combatTab, "Curse Barrier", false, function(v) settings.trapBarrierTypes.Curse = v end)
+UI:CreateToggle(combatTab, "Shock Mine Barrier", false, function(v) settings.trapBarrierTypes.ShockMine = v end)
+UI:CreateToggle(combatTab, "Teleport Gate Barrier", false, function(v) settings.trapBarrierTypes.TeleportGate = v end)
 
 UI:CreateSection(combatTab, "Dodge")
 UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v)
@@ -1408,9 +1404,9 @@ UI:CreateToggle(visualTab, "Enemy Only", false, function(v) settings.espEnemyOnl
 UI:CreateToggle(visualTab, "Team Only", false, function(v) settings.espTeamOnly = v; if v then settings.espEnemyOnly = false end end)
 UI:CreateSlider(visualTab, "Max Distance", 50, 2000, 1000, function(v) settings.espMaxDistance = v end)
 UI:CreateSection(visualTab, "ESP Options")
-UI:CreateToggle(visualTab, "Names", true, function(v) settings.espNames = v end)
-UI:CreateToggle(visualTab, "Distance", true, function(v) settings.espDistance = v end)
-UI:CreateToggle(visualTab, "Health", true, function(v) settings.espHealth = v end)
+UI:CreateToggle(visualTab, "Names", false, function(v) settings.espNames = v end)
+UI:CreateToggle(visualTab, "Distance", false, function(v) settings.espDistance = v end)
+UI:CreateToggle(visualTab, "Health", false, function(v) settings.espHealth = v end)
 UI:CreateToggle(visualTab, "Chams (Outline)", false, function(v) settings.espChams = v end)
 UI:CreateSection(visualTab, "ESP Colors")
 UI:CreateColorPicker(visualTab, "Enemy Color", Color3.fromRGB(255,50,50), function(c) settings.espEnemyColor = c end)
@@ -1420,4 +1416,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — silent aim (camera-independent), instant fire rate FSM patch, max charge, trap barriers.")
+print("[SHARP] Loaded in SAFE MODE — ALL features are OFF by default. Do not enable features on your main account.")
