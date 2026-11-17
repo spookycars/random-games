@@ -14,7 +14,8 @@ local targetLocked = nil
 local settings = {
     silentAim = false, triggerBot = false, triggerBotMode = "Crosshair",
     autoShoot = false, autoReload = true, maxCharge = true, infiniteAmmo = false,
-    silentAimWallCheck = true,           -- NEW: prevents silent aim picking targets behind walls
+    silentAimWallCheck = true,
+    instantFireRate = false,             -- NEW: patches FSM so Fire/Throw/Reload are instant
     chargeTime = 1.5,
     knifeTriggerDelay = 1.2,
     ignoreForcefield = true,
@@ -28,8 +29,8 @@ local settings = {
     antiTrap = false,
     trapAvoidRadius = 5,
     trapDangerRadius = 3,
-    trapBarriers = false,                -- NEW: physical barrier system from reference script
-    trapBarrierTypes = {                 -- NEW: per-type barrier toggles
+    trapBarriers = false,
+    trapBarrierTypes = {
         BearTrap = true,
         Goop = true,
         Curse = true,
@@ -58,6 +59,7 @@ local m_GameCharacterController = require(ReplicatedStorage.Client.Controllers.G
 local m_CombatClient = require(ReplicatedStorage.Client.Madwork.CombatClient)
 local m_BackpackClient = require(ReplicatedStorage.Client.Madwork.BackpackClient)
 local m_ToolUsageClient = require(ReplicatedStorage.Client.Madwork.ToolUsageClient)
+local m_MadFSM = require(ReplicatedStorage.Shared.Madwork.MadFSM)
 local m_MadworkCaster = require(ReplicatedStorage.Shared.Madwork.MadworkCaster)
 
 local rayParams = RaycastParams.new()
@@ -94,8 +96,6 @@ end
 
 -- ==========================================================
 --  UPDATED: GetClosestHead(anyDirection, requireVisible)
---  anyDirection = true  -> considers off-screen enemies too
---  requireVisible = true -> must not be behind a wall
 -- ==========================================================
 local function GetClosestHead(anyDirection, requireVisible)
     local closest, closestDist, closestPlayer, closestGameChar = nil, math.huge, nil, nil
@@ -123,7 +123,6 @@ local function GetClosestHead(anyDirection, requireVisible)
         if onScreen then
             score = (Vector2.new(screenPos.X, screenPos.Y) - camCenter).Magnitude
         elseif anyDirection then
-            -- Off-screen: rank by 3D distance with a large penalty so on-screen always wins
             local dist3D = (head.Position - localRoot.Position).Magnitude
             score = 100000 + dist3D
         else
@@ -144,7 +143,6 @@ m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
     if not settings.silentAim and not settings.maxCharge then return end
     if settings.maxCharge then combatEvent.GameAction.Charge = 1 end
     if settings.silentAim then
-        -- Silent aim now works regardless of camera direction
         local head = GetClosestHead(true, settings.silentAimWallCheck)
         if head then
             local throwPos = combatEvent.GameAction.Position
@@ -199,6 +197,60 @@ local function ResolveWeaponType(tool)
     end
     return nil
 end
+
+-- ===================== INSTANT FIRE RATE (FSM patch) =====================
+local patchedFSMs = {}
+
+local function PatchFSM(fsm)
+    if not fsm or not fsm._states then return end
+    for name, state in pairs(fsm._states) do
+        if name == "Fire" or name == "Throw" or name == "Reload" then
+            state.Duration = 0
+            state.Leaving = nil
+            state.Entering = nil
+        end
+    end
+end
+
+local origNewMadFSM = m_MadFSM.NewMadFSM
+m_MadFSM.NewMadFSM = function()
+    local fsm = origNewMadFSM()
+    local origDef = fsm.DefineStates
+    fsm.DefineStates = function(self, states)
+        if settings.instantFireRate then
+            for _, name in ipairs({"Fire", "Throw", "Reload"}) do
+                if states[name] then
+                    states[name].Duration = 0
+                    states[name].Leaving = nil
+                    states[name].Entering = nil
+                end
+            end
+        end
+        return origDef(self, states)
+    end
+    return fsm
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        if not settings.instantFireRate then continue end
+        for _, tool in ipairs(GetAllTools()) do
+            local fsm = tool.Store.FSM
+            if fsm then
+                if not patchedFSMs[fsm] then
+                    patchedFSMs[fsm] = true
+                    PatchFSM(fsm)
+                end
+                if fsm.State == "Fire" or fsm.State == "Throw" or fsm.State == "Reload" then
+                    fsm.Progress = 1
+                    fsm.Duration = 0
+                    fsm.StartTime = 0
+                end
+            end
+        end
+    end
+end)
 
 -- ===================== TRAP AVOIDANCE HELPERS =====================
 local TRAP_NAME_PATTERNS = {
@@ -366,6 +418,26 @@ local function FireKnife(tool)
     if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then
         return false
     end
+
+    -- ===== INSTANT MAX-CHARGE THROW =====
+    -- When instantFireRate + maxCharge are both on, skip charge-hold wait.
+    -- Charge = 1 is forced in OnLocalEvent so the throw is full power.
+    if settings.instantFireRate and settings.maxCharge then
+        if tick() - lastKnifeThrow < 0.15 then return false end
+        if state == "Idle" or state == "ChargeHold" or state == "Charge" then
+            if type(fsm.Set) == "function" then
+                local ok = pcall(fsm.Set, fsm, "Throw")
+                if ok then
+                    lastKnifeThrow = tick()
+                    chargeStartedAt[tool] = nil
+                end
+                return ok
+            end
+        end
+        return false
+    end
+
+    -- ===== Normal charge-hold mode =====
     if tick() - lastKnifeThrow < settings.knifeTriggerDelay then
         return false
     end
@@ -416,7 +488,10 @@ local function FireGun(tool)
         return false
     end
     if state == "Fire" or state == "Throw" then return false end
-    if tick() - lastGunShot < 0.1 then return false end
+
+    -- In instant mode the Fire state has Duration 0; only a tiny safety gate remains.
+    local cooldown = settings.instantFireRate and 0.05 or 0.1
+    if tick() - lastGunShot < cooldown then return false end
 
     if type(fsm.Set) == "function" then
         local ok = pcall(fsm.Set, fsm, "Fire")
@@ -478,8 +553,6 @@ task.spawn(function()
             elseif settings.triggerBotMode == "Aimbot" then
                 shouldFire = settings.aimbot.enabled and targetLocked ~= nil
             elseif settings.triggerBotMode == "Silent Aim" then
-                -- NEW: fires whenever silent aim has a valid visible target
-                -- regardless of where your camera is facing
                 if settings.silentAim then
                     shouldFire = GetClosestHead(true, true) ~= nil
                 end
@@ -914,7 +987,6 @@ RunService.Heartbeat:Connect(function()
     end
 
     if settings.targetHighlight then
-        -- Any-direction so off-screen targets are still highlighted (useful for tracking)
         local head, _, gameChar = GetClosestHead(true, false)
         if gameChar and gameChar.Character and gameChar.Character.IsAlive and gameChar.Character.Model then
             applyTargetHighlight(gameChar.Character.Model)
@@ -1279,6 +1351,9 @@ UI:CreateSection(combatTab, "Combat")
 UI:CreateToggle(combatTab, "Silent Aim (camera-independent)", false, function(v) settings.silentAim = v end)
 UI:CreateToggle(combatTab, "Silent Aim Wall Check", true, function(v) settings.silentAimWallCheck = v end)
 UI:CreateToggle(combatTab, "Max Charge (force full power)", true, function(v) settings.maxCharge = v end)
+UI:CreateToggle(combatTab, "Instant Fire Rate (FSM patch)", false, function(v)
+    settings.instantFireRate = v
+end)
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
@@ -1345,4 +1420,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — silent aim (camera-independent), Silent Aim triggerbot mode, trap barriers.")
+print("[SHARP] Loaded — silent aim (camera-independent), instant fire rate FSM patch, max charge, trap barriers.")
