@@ -11,10 +11,6 @@ local PG = LocalPlayer:WaitForChild("PlayerGui")
 
 local targetLocked = nil
 
--- ============================================================
---  Settings — silent aim only, no max charge, no instant fire
---  All combat toggles default OFF
--- ============================================================
 local settings = {
     silentAim = false, triggerBot = false, triggerBotMode = "Crosshair",
     autoShoot = false, autoReload = false, infiniteAmmo = false,
@@ -31,6 +27,14 @@ local settings = {
     antiTrap = false,
     trapAvoidRadius = 5,
     trapDangerRadius = 3,
+    trapBarriers = false,
+    trapBarrierTypes = {
+        BearTrap = false,
+        Goop = false,
+        Curse = false,
+        ShockMine = false,
+        TeleportGate = false,
+    },
     dodgeKnife = false,
     dodgeRadius = 12,
     dodgeReactionTime = 0.25,
@@ -87,11 +91,6 @@ local function IsVisible(head)
     return false
 end
 
--- ==========================================================
---  GetClosestHead(anyDirection, requireVisible)
---  anyDirection = true -> considers off-screen enemies (silent aim)
---  anyDirection = false -> on-screen only (proximity/triggerbot)
--- ==========================================================
 local function GetClosestHead(anyDirection, requireVisible)
     local closest, closestDist, closestPlayer, closestGameChar = nil, math.huge, nil, nil
     local localChar = LocalPlayer.Character
@@ -134,9 +133,6 @@ local function GetClosestHead(anyDirection, requireVisible)
     return closest, closestPlayer, closestGameChar
 end
 
--- ===================== SILENT AIM ONLY =====================
--- Directs any outgoing combat event's Direction toward the closest
--- enemy head, regardless of camera facing. No charge override.
 m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
     if not settings.silentAim then return end
     local head = GetClosestHead(true, false)
@@ -146,7 +142,6 @@ m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
     end
 end)
 
--- ===================== INFINITE AMMO (kept from original) =====================
 local useClipHooked = false
 local function HookUseClip()
     if useClipHooked then return end
@@ -194,7 +189,7 @@ local function ResolveWeaponType(tool)
     return nil
 end
 
--- ===================== TRAP AVOIDANCE (movement only) =====================
+-- ===================== TRAP AVOIDANCE HELPERS =====================
 local TRAP_NAME_PATTERNS = {
     "trap", "goop", "curse", "mine", "shock", "slow", "web", "snare",
 }
@@ -271,7 +266,79 @@ local function computeAvoidTarget(myPos, trapPos)
     end
 end
 
--- ============ FIRE LOGIC (original behavior) ============
+-- ===================== TRAP BARRIERS (Block Physics) =====================
+local TRAP_BARRIER_KEYWORDS = {
+    BearTrap = {"beartrap", "bear trap"},
+    Goop = {"goop"},
+    Curse = {"curse"},
+    ShockMine = {"shockmine", "shock mine"},
+    TeleportGate = {"teleportgate", "teleport gate"},
+}
+
+local trapBarrierFolder = Instance.new("Folder")
+trapBarrierFolder.Name = "SharpTrapBarriers"
+trapBarrierFolder.Parent = workspace
+
+local function findTrapTriggerPart(model)
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local lower = part.Name:lower()
+            if lower == "hitdetect" or lower == "trigger" or lower == "touch" or lower == "sensor" then
+                return part
+            end
+        end
+    end
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") and part:FindFirstChildOfClass("TouchInterest") then
+            return part
+        end
+    end
+    return model:FindFirstChild("Root") or model:FindFirstChildOfClass("BasePart")
+end
+
+local function createTrapBarrier(model)
+    local trigger = findTrapTriggerPart(model)
+    if not trigger then return end
+    local barrier = Instance.new("Part")
+    barrier.Name = "SharpBarrier_" .. model.Name
+    barrier.Size = trigger.Size + Vector3.new(3, 3, 3)
+    barrier.CFrame = trigger.CFrame
+    barrier.Anchored = true
+    barrier.CanCollide = true
+    barrier.Transparency = 1
+    barrier.Material = Enum.Material.SmoothPlastic
+    barrier.Parent = trapBarrierFolder
+end
+
+local function updateTrapBarriers()
+    for _, v in pairs(trapBarrierFolder:GetChildren()) do v:Destroy() end
+    if not settings.trapBarriers then return end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        local model = obj:IsA("Model") and obj or (obj:IsA("BasePart") and obj.Parent)
+        if model then
+            local name = model.Name:lower()
+            for key, keywords in pairs(TRAP_BARRIER_KEYWORDS) do
+                if settings.trapBarrierTypes[key] then
+                    for _, kw in ipairs(keywords) do
+                        if name:find(kw, 1, true) then
+                            createTrapBarrier(model)
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        pcall(updateTrapBarriers)
+    end
+end)
+
+-- ============ FIRE LOGIC ============
 local chargeStartedAt = {}
 local lastKnifeThrow = 0
 local lastGunShot = 0
@@ -399,7 +466,7 @@ task.spawn(function()
                 shouldFire = IsCrosshairOnEnemy()
             elseif settings.triggerBotMode == "Aimbot" then
                 shouldFire = settings.aimbot.enabled and targetLocked ~= nil
-            else -- Proximity: on-screen visible target
+            else
                 local head = GetClosestHead(false, true)
                 shouldFire = head ~= nil
             end
@@ -863,7 +930,7 @@ function Library.new()
     self.ScreenGui = Instance.new("ScreenGui")
     self.ScreenGui.Name = "SharpScriptHub"
     self.ScreenGui.ResetOnSpawn = false
-    self.ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    self.ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
     pcall(function() self.ScreenGui.Parent = game:GetService("CoreGui") end)
     if not self.ScreenGui.Parent then self.ScreenGui.Parent = PG end
 
@@ -1135,20 +1202,22 @@ function Library:CreateDropdown(parent, text, options, default, callback)
     local lf = Instance.new("Frame")
     lf.Size = UDim2.new(0,140,0,math.min(#options*28,200))
     lf.Position = UDim2.new(0,0,1,2); lf.BackgroundColor3 = Color3.fromRGB(40,40,50)
-    lf.BorderSizePixel = 0; lf.Visible = false; lf.ZIndex = 10; lf.Parent = dd
+    lf.BorderSizePixel = 0; lf.Visible = false
+    lf.ZIndex = 999; lf.Parent = dd
     local lc = Instance.new("UICorner"); lc.CornerRadius = UDim.new(0,4); lc.Parent = lf
 
     local scroll = Instance.new("ScrollingFrame")
     scroll.Size = UDim2.new(1,0,1,0); scroll.BackgroundTransparency = 1
     scroll.ScrollBarThickness = 3; scroll.CanvasSize = UDim2.new(0,0,0,#options*28)
-    scroll.ZIndex = 11; scroll.Parent = lf
+    scroll.ZIndex = 1000; scroll.Parent = lf
 
     for i, opt in ipairs(options) do
         local btn = Instance.new("TextButton")
         btn.Size = UDim2.new(1,0,0,28); btn.Position = UDim2.new(0,0,0,(i-1)*28)
         btn.BackgroundColor3 = Color3.fromRGB(50,50,60); btn.BorderSizePixel = 0
         btn.Text = opt; btn.TextColor3 = Color3.fromRGB(220,220,220)
-        btn.Font = Enum.Font.Gotham; btn.TextSize = 12; btn.ZIndex = 12; btn.Parent = scroll
+        btn.Font = Enum.Font.Gotham; btn.TextSize = 12
+        btn.ZIndex = 1001; btn.Parent = scroll
         btn.Activated:Connect(function()
             dd.Text = opt; lf.Visible = false
             if callback then callback(opt) end
@@ -1206,6 +1275,14 @@ UI:CreateSlider(combatTab, "Trap Danger Radius (studs)", 1, 8, 3, function(v)
     settings.trapDangerRadius = v
 end)
 
+UI:CreateSection(combatTab, "Trap Barriers (Block Physics)")
+UI:CreateToggle(combatTab, "Enable Trap Barriers", false, function(v) settings.trapBarriers = v end)
+UI:CreateToggle(combatTab, "Bear Trap Barrier", false, function(v) settings.trapBarrierTypes.BearTrap = v end)
+UI:CreateToggle(combatTab, "Goop Barrier", false, function(v) settings.trapBarrierTypes.Goop = v end)
+UI:CreateToggle(combatTab, "Curse Barrier", false, function(v) settings.trapBarrierTypes.Curse = v end)
+UI:CreateToggle(combatTab, "Shock Mine Barrier", false, function(v) settings.trapBarrierTypes.ShockMine = v end)
+UI:CreateToggle(combatTab, "Teleport Gate Barrier", false, function(v) settings.trapBarrierTypes.TeleportGate = v end)
+
 UI:CreateSection(combatTab, "Dodge")
 UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v)
     settings.dodgeKnife = v
@@ -1250,4 +1327,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — silent aim only. No max charge, no instant fire, no FSM patch. All toggles OFF by default.")
+print("[SHARP] Loaded — trap barriers restored. Silent aim only. All toggles OFF by default.")
