@@ -516,7 +516,14 @@ task.spawn(function()
                 shouldFire = IsCrosshairOnEnemy()
             elseif settings.triggerBotMode == "Aimbot" then
                 shouldFire = settings.aimbot.enabled and targetLocked ~= nil
-            else
+            elseif settings.triggerBotMode == "Silent Aim" then
+                -- CAMERA-INDEPENDENT: fires whenever silent aim has a visible
+                -- target in ANY direction. Requires silentAim to be enabled,
+                -- otherwise the shot goes in camera direction and misses.
+                if settings.silentAim then
+                    shouldFire = GetClosestHead(true, true) ~= nil
+                end
+            else -- Proximity: on-screen visible (original behavior)
                 local head = GetClosestHead(false, true)
                 shouldFire = head ~= nil
             end
@@ -1273,7 +1280,6 @@ function Library:CreateColorPicker(parent, text, default, callback)
     return f
 end
 
--- ===================== DROPDOWN (parented outside ScrollingFrame) =====================
 function Library:CreateDropdown(parent, text, options, default, callback)
     local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,36)
     f.BackgroundColor3 = Color3.fromRGB(28,28,36); f.BorderSizePixel = 0; f.Parent = parent
@@ -1292,7 +1298,6 @@ function Library:CreateDropdown(parent, text, options, default, callback)
     dd.TextSize = 12; dd.Parent = f
     local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(0,4); dc.Parent = dd
 
-    -- IMPORTANT: parent list to Main frame (NOT the ScrollingFrame) to escape clipping
     local lf = Instance.new("Frame")
     lf.Size = UDim2.new(0,140,0,math.min(#options*28,200))
     lf.BackgroundColor3 = Color3.fromRGB(40,40,50)
@@ -1331,7 +1336,6 @@ function Library:CreateDropdown(parent, text, options, default, callback)
         if lf.Visible then
             lf.Visible = false
         else
-            -- hide other dropdowns so only one is open at a time
             for _, entry in ipairs(self.OpenDropdowns) do
                 if entry.frame ~= lf then pcall(function() entry.hide() end) end
             end
@@ -1340,7 +1344,6 @@ function Library:CreateDropdown(parent, text, options, default, callback)
         end
     end)
 
-    -- register so tab switch / menu close can hide it
     table.insert(self.OpenDropdowns, {
         frame = lf,
         hide = function() lf.Visible = false end,
@@ -1368,7 +1371,7 @@ local visualTab = UI:CreateTab("Visuals")
 UI:CreateSection(combatTab, "Fire Mode")
 UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot = v end)
 UI:CreateDropdown(combatTab, "Triggerbot Mode",
-    {"Crosshair", "Aimbot", "Proximity"}, "Crosshair",
+    {"Crosshair", "Aimbot", "Silent Aim", "Proximity"}, "Crosshair",
     function(opt) settings.triggerBotMode = opt end)
 UI:CreateSlider(combatTab, "Charge Time (÷100 s)", 10, 300, 150, function(v)
     settings.chargeTime = v / 100
@@ -1462,4 +1465,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — dropdowns now render above everything (parented outside ScrollingFrame). Silent aim requires visibility. Trap ESP + auto-shoot traps active. All toggles OFF by default.")
+print("[SHARP] Loaded — 'Silent Aim' triggerbot mode added (camera-independent). Select mode = 'Silent Aim' + enable Silent Aim toggle for it to work. All toggles OFF by default.")
