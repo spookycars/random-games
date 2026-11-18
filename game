@@ -22,6 +22,13 @@ local settings = {
     espMaxDistance = 1000,
     espEnemyColor = Color3.fromRGB(255, 50, 50),
     espTeamColor = Color3.fromRGB(50, 255, 50),
+    -- Trap ESP
+    trapEsp = false,
+    trapEspColor = Color3.fromRGB(255, 100, 0),
+    trapEspMaxDistance = 300,
+    -- Trap auto shoot
+    autoShootTraps = false,
+    trapShootRange = 150,
     targetHighlight = false, knifeTracers = false,
     knifeTracerColor = Color3.fromRGB(255, 200, 0),
     antiTrap = false,
@@ -133,15 +140,106 @@ local function GetClosestHead(anyDirection, requireVisible)
     return closest, closestPlayer, closestGameChar
 end
 
+-- ===================== TRAP FINDING HELPERS =====================
+local TRAP_NAME_PATTERNS = {
+    "trap", "goop", "curse", "mine", "shock", "slow", "web", "snare",
+}
+
+local function isTrapPart(part)
+    if not part or not part:IsA("BasePart") then return false end
+    local n = string.lower(part.Name)
+    for _, pattern in ipairs(TRAP_NAME_PATTERNS) do
+        if n:find(pattern) then return true end
+    end
+    return false
+end
+
+local function getTrapAdornee(part)
+    local node = part.Parent
+    local depth = 0
+    while node and node ~= workspace and depth < 6 do
+        if node:IsA("Model") then
+            local lname = string.lower(node.Name)
+            for _, pattern in ipairs(TRAP_NAME_PATTERNS) do
+                if lname:find(pattern) then
+                    return node
+                end
+            end
+        end
+        node = node.Parent
+        depth = depth + 1
+    end
+    return part
+end
+
+-- Find traps within maxRadius. If requireVisible, only return traps that have
+-- a clear line-of-sight from the player's root position to one of their parts.
+local function findTrapsInRange(maxRadius, requireVisible)
+    local localChar = LocalPlayer.Character
+    if not localChar then return {} end
+    local root = localChar:FindFirstChild("HumanoidRootPart")
+    if not root then return {} end
+
+    local overlapParams = OverlapParams.new()
+    overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+    overlapParams.FilterDescendantsInstances = {localChar}
+
+    local parts = workspace:GetPartBoundsInRadius(root.Position, maxRadius, overlapParams)
+    local traps = {}
+    local added = {}
+
+    for _, part in ipairs(parts) do
+        if isTrapPart(part) then
+            local adornee = getTrapAdornee(part)
+            if not added[adornee] then
+                local visible = true
+                if requireVisible then
+                    local rp = RaycastParams.new()
+                    rp.FilterType = Enum.RaycastFilterType.Exclude
+                    rp.FilterDescendantsInstances = {localChar}
+                    local result = workspace:Raycast(root.Position, part.Position - root.Position, rp)
+                    visible = result ~= nil and (result.Instance == part or result.Instance:IsDescendantOf(part.Parent))
+                end
+                if visible then
+                    local dist = (part.Position - root.Position).Magnitude
+                    local entry = { part = part, adornee = adornee, dist = dist }
+                    table.insert(traps, entry)
+                    added[adorneesee_] = entry
+                    added[adornee] = entry
+                end
+            end
+        end
+    end
+
+    table.sort(traps, function(a, b) return a.dist < b.dist end)
+    return traps
+end
+
+-- ===================== SILENT AIM (visibility required) + TRAP PRIORITY =====================
 m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
-    if not settings.silentAim then return end
-    local head = GetClosestHead(true, false)
-    if head then
-        local throwPos = combatEvent.GameAction.Position
-        combatEvent.GameAction.Direction = (head.Position - throwPos).Unit
+    if not settings.silentAim and not settings.autoShootTraps then return end
+
+    local throwPos = combatEvent.GameAction.Position
+
+    -- Auto-shoot-traps: target the closest visible trap if in range
+    if settings.autoShootTraps then
+        local traps = findTrapsInRange(settings.trapShootRange, true)
+        if #traps > 0 then
+            combatEvent.GameAction.Direction = (traps[1].part.Position - throwPos).Unit
+            return
+        end
+    end
+
+    -- Otherwise silent-aim at the closest visible enemy head (any camera direction)
+    if settings.silentAim then
+        local head = GetClosestHead(true, true)
+        if head then
+            combatEvent.GameAction.Direction = (head.Position - throwPos).Unit
+        end
     end
 end)
 
+-- ===================== INFINITE AMMO =====================
 local useClipHooked = false
 local function HookUseClip()
     if useClipHooked then return end
@@ -190,19 +288,6 @@ local function ResolveWeaponType(tool)
 end
 
 -- ===================== TRAP AVOIDANCE HELPERS =====================
-local TRAP_NAME_PATTERNS = {
-    "trap", "goop", "curse", "mine", "shock", "slow", "web", "snare",
-}
-
-local function isTrapPart(part)
-    if not part or not part:IsA("BasePart") then return false end
-    local n = string.lower(part.Name)
-    for _, pattern in ipairs(TRAP_NAME_PATTERNS) do
-        if n:find(pattern) then return true end
-    end
-    return false
-end
-
 local function scanTraps(centerPos, radius)
     local overlapParams = OverlapParams.new()
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -266,7 +351,7 @@ local function computeAvoidTarget(myPos, trapPos)
     end
 end
 
--- ===================== TRAP BARRIERS (Block Physics) =====================
+-- ===================== TRAP BARRIERS =====================
 local TRAP_BARRIER_KEYWORDS = {
     BearTrap = {"beartrap", "bear trap"},
     Goop = {"goop"},
@@ -495,6 +580,19 @@ task.spawn(function()
     end
 end)
 
+-- ===================== AUTO SHOOT TRAPS LOOP =====================
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+        if settings.autoShootTraps then
+            local traps = findTrapsInRange(settings.trapShootRange, true)
+            if #traps > 0 then
+                TryFire()
+            end
+        end
+    end
+end)
+
 -- ===================== TRAP AVOIDANCE LOOP =====================
 RunService.Stepped:Connect(function()
     if not settings.antiTrap then return end
@@ -701,7 +799,7 @@ end
 RunService.RenderStepped:Connect(aimbotUpdate)
 Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
 
--- ===================== ESP =====================
+-- ===================== ESP (PLAYERS) =====================
 local espFolder = Instance.new("Folder")
 espFolder.Name = "SharpESPData"
 pcall(function() espFolder.Parent = game:GetService("CoreGui") end)
@@ -918,6 +1016,66 @@ task.spawn(function()
                 end
             end
         end)
+    end
+end)
+
+-- ===================== TRAP ESP (highlight traps through walls) =====================
+local trapEspFolder = Instance.new("Folder")
+trapEspFolder.Name = "SharpTrapESPData"
+trapEspFolder.Parent = espFolder
+if not trapEspFolder.Parent then trapEspFolder.Parent = PG end
+
+local trapEspCache = {}
+
+local function cleanupAllTrapEsp()
+    for adornee, hl in pairs(trapEspCache) do
+        pcall(function() hl:Destroy() end)
+    end
+    trapEspCache = {}
+end
+
+local function updateTrapEsp()
+    if not settings.trapEsp then
+        cleanupAllTrapEsp()
+        return
+    end
+
+    local traps = findTrapsInRange(settings.trapEspMaxDistance, false)
+    local seen = {}
+
+    for _, t in ipairs(traps) do
+        seen[t.adornee] = true
+        local existing = trapEspCache[t.adornee]
+        if existing then
+            existing.FillColor = settings.trapEspColor
+            existing.OutlineColor = settings.trapEspColor
+        else
+            local hl = Instance.new("Highlight")
+            hl.Name = "TrapESP_" .. t.adornee.Name
+            hl.FillColor = settings.trapEspColor
+            hl.FillTransparency = 0.55
+            hl.OutlineColor = settings.trapEspColor
+            hl.OutlineTransparency = 0
+            hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            hl.Adornee = t.adornee
+            hl.Parent = trapEspFolder
+            trapEspCache[t.adornee] = hl
+        end
+    end
+
+    -- cleanup removed
+    for adornee, hl in pairs(trapEspCache) do
+        if not seen[adornee] then
+            pcall(function() hl:Destroy() end)
+            trapEspCache[adornee] = nil
+        end
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.3)
+        pcall(updateTrapEsp)
     end
 end)
 
@@ -1260,9 +1418,15 @@ UI:CreateToggle(combatTab, "Auto Reload", false, function(v) settings.autoReload
 UI:CreateToggle(combatTab, "Ignore Forcefield", false, function(v) settings.ignoreForcefield = v end)
 
 UI:CreateSection(combatTab, "Combat")
-UI:CreateToggle(combatTab, "Silent Aim (camera-independent)", false, function(v) settings.silentAim = v end)
+UI:CreateToggle(combatTab, "Silent Aim (visible heads, any angle)", false, function(v) settings.silentAim = v end)
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
+
+UI:CreateSection(combatTab, "Auto Shoot Traps")
+UI:CreateToggle(combatTab, "Auto Shoot Traps (silent aim)", false, function(v) settings.autoShootTraps = v end)
+UI:CreateSlider(combatTab, "Trap Shoot Range (studs)", 30, 500, 150, function(v)
+    settings.trapShootRange = v
+end)
 
 UI:CreateSection(combatTab, "Trap Avoidance (Move Out)")
 UI:CreateToggle(combatTab, "Anti-Trap Movement", false, function(v)
@@ -1322,9 +1486,17 @@ UI:CreateToggle(visualTab, "Chams (Outline)", false, function(v) settings.espCha
 UI:CreateSection(visualTab, "ESP Colors")
 UI:CreateColorPicker(visualTab, "Enemy Color", Color3.fromRGB(255,50,50), function(c) settings.espEnemyColor = c end)
 UI:CreateColorPicker(visualTab, "Team Color", Color3.fromRGB(50,255,50), function(c) settings.espTeamColor = c end)
+
+UI:CreateSection(visualTab, "Trap ESP")
+UI:CreateToggle(visualTab, "Trap ESP (highlight)", false, function(v) settings.trapEsp = v end)
+UI:CreateSlider(visualTab, "Trap ESP Range (studs)", 50, 1000, 300, function(v)
+    settings.trapEspMaxDistance = v
+end)
+UI:CreateColorPicker(visualTab, "Trap ESP Color", Color3.fromRGB(255,100,0), function(c) settings.trapEspColor = c end)
+
 UI:CreateSection(visualTab, "World")
 UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targetHighlight = v; if not v then clearTargetHighlight() end end)
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — trap barriers restored. Silent aim only. All toggles OFF by default.")
+print("[SHARP] Loaded — silent aim requires visibility (any camera angle), trap ESP + auto-shoot traps added. All toggles OFF by default.")
