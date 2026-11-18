@@ -44,17 +44,10 @@ local settings = {
     dodgeRadius = 12,
     dodgeReactionTime = 0.25,
     aimbot = {
-        enabled = false,
-        wallCheck = false,
-        teamCheck = false,
-        targetPart = "Head",
-        fov = 200,
-        maxDistance = 1000,
-        smoothness = 1,
-        prioritizeClosest = false,
-        wallCheckPrecision = 3,
-        infiniteRange = false,
-        aimBehind = false,
+        enabled = false, wallCheck = false, teamCheck = false,
+        targetPart = "Head", fov = 200, maxDistance = 1000, smoothness = 1,
+        prioritizeClosest = false, wallCheckPrecision = 3,
+        infiniteRange = false, aimBehind = false,
     },
 }
 
@@ -78,9 +71,7 @@ local function HasForceField(character)
     if character:FindFirstChildOfClass("ForceField") then return true end
     for _, d in ipairs(character:GetDescendants()) do
         if d:IsA("ForceField") then return true end
-        if d:IsA("BasePart") and FORCEFIELD_NAMES[d.Name:lower()] and d.Transparency < 1 then
-            return true
-        end
+        if d:IsA("BasePart") and FORCEFIELD_NAMES[d.Name:lower()] and d.Transparency < 1 then return true end
     end
     return false
 end
@@ -101,9 +92,7 @@ local function GetClosestHead(anyDirection, requireVisible)
     local localChar = LocalPlayer.Character
     local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
     if not localRoot then return nil end
-
     local camCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         if gameChar.Player == LocalPlayer then continue end
         if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
@@ -112,35 +101,25 @@ local function GetClosestHead(anyDirection, requireVisible)
         if settings.ignoreForcefield and char.Model and HasForceField(char.Model) then continue end
         local model = char.Model
         local head = model:FindFirstChild("Head")
-        local humanoid = model:FindFirstChildOfClass("Humanoid")
+        local humanoid = model:FindFirstChild("Humanoid")
         if not head or not humanoid or humanoid.Health <= 0 then continue end
-
         if requireVisible and not IsVisible(head) then continue end
-
         local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
         local score
         if onScreen then
             score = (Vector2.new(screenPos.X, screenPos.Y) - camCenter).Magnitude
         elseif anyDirection then
-            local dist3D = (head.Position - localRoot.Position).Magnitude
-            score = 100000 + dist3D
-        else
-            continue
-        end
-
+            score = 100000 + (head.Position - localRoot.Position).Magnitude
+        else continue end
         if score < closestDist then
-            closestDist = score
-            closest = head
-            closestPlayer = gameChar.Player
-            closestGameChar = gameChar
+            closestDist = score; closest = head
+            closestPlayer = gameChar.Player; closestGameChar = gameChar
         end
     end
     return closest, closestPlayer, closestGameChar
 end
 
-local TRAP_NAME_PATTERNS = {
-    "trap", "goop", "curse", "mine", "shock", "slow", "web", "snare",
-}
+local TRAP_NAME_PATTERNS = { "trap", "goop", "curse", "mine", "shock", "slow", "web", "snare" }
 
 local function isTrapPart(part)
     if not part or not part:IsA("BasePart") then return false end
@@ -152,8 +131,7 @@ local function isTrapPart(part)
 end
 
 local function getTrapAdornee(part)
-    local node = part.Parent
-    local depth = 0
+    local node = part.Parent; local depth = 0
     while node and node ~= workspace and depth < 6 do
         if node:IsA("Model") then
             local lname = string.lower(node.Name)
@@ -161,8 +139,7 @@ local function getTrapAdornee(part)
                 if lname:find(pattern) then return node end
             end
         end
-        node = node.Parent
-        depth = depth + 1
+        node = node.Parent; depth = depth + 1
     end
     return part
 end
@@ -172,15 +149,11 @@ local function findTrapsInRange(maxRadius, requireVisible)
     if not localChar then return {} end
     local root = localChar:FindFirstChild("HumanoidRootPart")
     if not root then return {} end
-
     local overlapParams = OverlapParams.new()
     overlapParams.FilterType = Enum.RaycastFilterType.Exclude
     overlapParams.FilterDescendantsInstances = {localChar}
-
     local parts = workspace:GetPartBoundsInRadius(root.Position, maxRadius, overlapParams)
-    local traps = {}
-    local added = {}
-
+    local traps, added = {}, {}
     for _, part in ipairs(parts) do
         if isTrapPart(part) then
             local adornee = getTrapAdornee(part)
@@ -194,24 +167,19 @@ local function findTrapsInRange(maxRadius, requireVisible)
                     visible = result ~= nil and (result.Instance == part or result.Instance:IsDescendantOf(part.Parent))
                 end
                 if visible then
-                    local dist = (part.Position - root.Position).Magnitude
-                    local entry = { part = part, adornee = adornee, dist = dist }
-                    table.insert(traps, entry)
-                    added[adornee] = entry
+                    local entry = { part = part, adornee = adornee, dist = (part.Position - root.Position).Magnitude }
+                    table.insert(traps, entry); added[adornee] = entry
                 end
             end
         end
     end
-
     table.sort(traps, function(a, b) return a.dist < b.dist end)
     return traps
 end
 
 m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
     if not settings.silentAim and not settings.autoShootTraps then return end
-
     local throwPos = combatEvent.GameAction.Position
-
     if settings.autoShootTraps then
         local traps = findTrapsInRange(settings.trapShootRange, true)
         if #traps > 0 then
@@ -219,7 +187,6 @@ m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
             return
         end
     end
-
     if settings.silentAim then
         local head = GetClosestHead(true, true)
         if head then
@@ -251,9 +218,7 @@ local function GetAllTools()
     for i, v in pairs(upvals) do
         if type(v) == "table" then
             for id, tool in pairs(v) do
-                if type(tool) == "table" and tool.Store then
-                    table.insert(tools, tool)
-                end
+                if type(tool) == "table" and tool.Store then table.insert(tools, tool) end
             end
         end
     end
@@ -265,13 +230,9 @@ local function ResolveWeaponType(tool)
     local behaviour = tool.Setup.ToolBehaviour
     if type(behaviour) ~= "string" then return nil end
     local b = behaviour:lower()
-    if b:find("knife", 1, true) or b:find("melee", 1, true) or b:find("blade", 1, true) then
-        return "knife"
-    end
+    if b:find("knife", 1, true) or b:find("melee", 1, true) or b:find("blade", 1, true) then return "knife" end
     if b:find("gun", 1, true) or b:find("firearm", 1, true) or b:find("pistol", 1, true)
-       or b:find("rifle", 1, true) or b:find("shotgun", 1, true) or b:find("weapon", 1, true) then
-        return "gun"
-    end
+       or b:find("rifle", 1, true) or b:find("shotgun", 1, true) or b:find("weapon", 1, true) then return "gun" end
     return nil
 end
 
@@ -306,19 +267,14 @@ local function computeAvoidTarget(myPos, trapPos)
     local perpB = Vector3.new(awayDir.Z, 0, -awayDir.X)
     local blendA = (perpA + awayDir * 0.6).Unit
     local blendB = (perpB + awayDir * 0.6).Unit
-
     local trapRayParams = RaycastParams.new()
     trapRayParams.FilterType = Enum.RaycastFilterType.Exclude
     local excludeList = {}
     if LocalPlayer.Character then table.insert(excludeList, LocalPlayer.Character) end
     trapRayParams.FilterDescendantsInstances = excludeList
-
     local probeDist = 8
     local origin = myPos + Vector3.new(0, 2.5, 0)
-    local function isClear(dir)
-        return workspace:Raycast(origin, dir * probeDist, trapRayParams) == nil
-    end
-
+    local function isClear(dir) return workspace:Raycast(origin, dir * probeDist, trapRayParams) == nil end
     if isClear(blendA) then return myPos + blendA * probeDist
     elseif isClear(blendB) then return myPos + blendB * probeDist
     else return myPos + awayDir * probeDist end
@@ -326,8 +282,7 @@ end
 
 local TRAP_BARRIER_KEYWORDS = {
     BearTrap = {"beartrap", "bear trap"},
-    Goop = {"goop"},
-    Curse = {"curse"},
+    Goop = {"goop"}, Curse = {"curse"},
     ShockMine = {"shockmine", "shock mine"},
     TeleportGate = {"teleportgate", "teleport gate"},
 }
@@ -340,15 +295,11 @@ local function findTrapTriggerPart(model)
     for _, part in ipairs(model:GetDescendants()) do
         if part:IsA("BasePart") then
             local lower = part.Name:lower()
-            if lower == "hitdetect" or lower == "trigger" or lower == "touch" or lower == "sensor" then
-                return part
-            end
+            if lower == "hitdetect" or lower == "trigger" or lower == "touch" or lower == "sensor" then return part end
         end
     end
     for _, part in ipairs(model:GetDescendants()) do
-        if part:IsA("BasePart") and part:FindFirstChildOfClass("TouchInterest") then
-            return part
-        end
+        if part:IsA("BasePart") and part:FindFirstChildOfClass("TouchInterest") then return part end
     end
     return model:FindFirstChild("Root") or model:FindFirstChildOfClass("BasePart")
 end
@@ -360,10 +311,8 @@ local function createTrapBarrier(model)
     barrier.Name = "SharpBarrier_" .. model.Name
     barrier.Size = trigger.Size + Vector3.new(3, 3, 3)
     barrier.CFrame = trigger.CFrame
-    barrier.Anchored = true
-    barrier.CanCollide = true
-    barrier.Transparency = 1
-    barrier.Material = Enum.Material.SmoothPlastic
+    barrier.Anchored = true; barrier.CanCollide = true
+    barrier.Transparency = 1; barrier.Material = Enum.Material.SmoothPlastic
     barrier.Parent = trapBarrierFolder
 end
 
@@ -377,10 +326,7 @@ local function updateTrapBarriers()
             for key, keywords in pairs(TRAP_BARRIER_KEYWORDS) do
                 if settings.trapBarrierTypes[key] then
                     for _, kw in ipairs(keywords) do
-                        if name:find(kw, 1, true) then
-                            createTrapBarrier(model)
-                            break
-                        end
+                        if name:find(kw, 1, true) then createTrapBarrier(model); break end
                     end
                 end
             end
@@ -389,10 +335,7 @@ local function updateTrapBarriers()
 end
 
 task.spawn(function()
-    while true do
-        task.wait(0.5)
-        pcall(updateTrapBarriers)
-    end
+    while true do task.wait(0.5); pcall(updateTrapBarriers) end
 end)
 
 local chargeStartedAt = {}
@@ -407,12 +350,8 @@ local function FireKnife(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or "")
-
-    if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then
-        return false
-    end
+    if state == "Fire" or state == "Throw" or state == "Equip" or state == "Preview" then return false end
     if tick() - lastKnifeThrow < settings.knifeTriggerDelay then return false end
-
     if state == "Charge" then
         chargeStartedAt[tool] = nil
         if type(fsm.Set) == "function" then
@@ -422,13 +361,10 @@ local function FireKnife(tool)
         end
         return false
     end
-
     if state == "ChargeHold" or state == "Idle" then
         if not chargeStartedAt[tool] then
             chargeStartedAt[tool] = tick()
-            if state == "Idle" and type(fsm.Set) == "function" then
-                pcall(fsm.Set, fsm, "ChargeHold")
-            end
+            if state == "Idle" and type(fsm.Set) == "function" then pcall(fsm.Set, fsm, "ChargeHold") end
             return false
         end
         if tick() - chargeStartedAt[tool] < settings.chargeTime then return false end
@@ -447,17 +383,12 @@ local function FireGun(tool)
     local fsm = tool.Store.FSM
     if not fsm then return false end
     local state = tostring(fsm.State or "")
-
     if state == "Reload" then
-        if settings.autoReload and type(fsm.Set) == "function" then
-            pcall(fsm.Set, fsm, "Idle")
-            return true
-        end
+        if settings.autoReload and type(fsm.Set) == "function" then pcall(fsm.Set, fsm, "Idle"); return true end
         return false
     end
     if state == "Fire" or state == "Throw" then return false end
     if tick() - lastGunShot < 0.1 then return false end
-
     if type(fsm.Set) == "function" then
         local ok = pcall(fsm.Set, fsm, "Fire")
         if ok then lastGunShot = tick() end
@@ -512,43 +443,27 @@ task.spawn(function()
         task.wait(0.05)
         if settings.triggerBot then
             local shouldFire = false
-            if settings.triggerBotMode == "Crosshair" then
-                shouldFire = IsCrosshairOnEnemy()
-            elseif settings.triggerBotMode == "Aimbot" then
-                shouldFire = settings.aimbot.enabled and targetLocked ~= nil
+            if settings.triggerBotMode == "Crosshair" then shouldFire = IsCrosshairOnEnemy()
+            elseif settings.triggerBotMode == "Aimbot" then shouldFire = settings.aimbot.enabled and targetLocked ~= nil
             elseif settings.triggerBotMode == "Silent Aim" then
-                -- CAMERA-INDEPENDENT: fires whenever silent aim has a visible
-                -- target in ANY direction. Requires silentAim to be enabled,
-                -- otherwise the shot goes in camera direction and misses.
-                if settings.silentAim then
-                    shouldFire = GetClosestHead(true, true) ~= nil
-                end
-            else -- Proximity: on-screen visible (original behavior)
-                local head = GetClosestHead(false, true)
-                shouldFire = head ~= nil
+                if settings.silentAim then shouldFire = GetClosestHead(true, true) ~= nil end
+            else
+                shouldFire = GetClosestHead(false, true) ~= nil
             end
             if shouldFire then
-                lastValidTargetTime = tick()
-                TryFire()
+                lastValidTargetTime = tick(); TryFire()
             else
-                if tick() - lastValidTargetTime > CHARGE_GRACE_PERIOD then
-                    ResetCharges()
-                end
+                if tick() - lastValidTargetTime > CHARGE_GRACE_PERIOD then ResetCharges() end
             end
-        else
-            ResetCharges()
-        end
+        else ResetCharges() end
     end
 end)
 
 task.spawn(function()
     while true do
         task.wait(0.05)
-        if settings.autoShoot then
-            TryFire()
-        elseif not settings.triggerBot then
-            ResetCharges()
-        end
+        if settings.autoShoot then TryFire()
+        elseif not settings.triggerBot then ResetCharges() end
     end
 end)
 
@@ -564,23 +479,17 @@ end)
 
 RunService.Stepped:Connect(function()
     if not settings.antiTrap then return end
-    local char = LocalPlayer.Character
-    if not char then return end
+    local char = LocalPlayer.Character; if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     local root = char:FindFirstChild("HumanoidRootPart")
     if not hum or not root then return end
-
     local myPos = root.Position
     local traps = scanTraps(myPos, settings.trapAvoidRadius)
     if #traps == 0 then return end
     local closest, dist = getClosestTrap(myPos, traps)
-    if not closest then return end
-    if dist > settings.trapAvoidRadius then return end
-
+    if not closest or dist > settings.trapAvoidRadius then return end
     local avoidTarget = computeAvoidTarget(myPos, closest.Position)
-    if hum.MoveDirection.Magnitude > 0.1 then
-        hum:MoveTo(avoidTarget)
-    elseif dist < settings.trapDangerRadius then
+    if hum.MoveDirection.Magnitude > 0.1 or dist < settings.trapDangerRadius then
         hum:MoveTo(avoidTarget)
     end
 end)
@@ -601,12 +510,10 @@ local DODGE_COOLDOWN_TIME = 0.4
 RunService.Heartbeat:Connect(function()
     if not settings.dodgeKnife then return end
     if tick() - dodgeCooldown < DODGE_COOLDOWN_TIME then return end
-    local char = LocalPlayer.Character
-    if not char then return end
+    local char = LocalPlayer.Character; if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     local root = char:FindFirstChild("HumanoidRootPart")
     if not hum or not root or hum.Health <= 0 then return end
-
     local myPos = root.Position
     for _, obj in ipairs(workspace:GetDescendants()) do
         if isThrownKnife(obj) then
@@ -615,8 +522,7 @@ RunService.Heartbeat:Connect(function()
             if speed < 20 then continue end
             local toMe = myPos - obj.Position
             local distance = toMe.Magnitude
-            if distance > settings.dodgeRadius then continue end
-            if distance < 1 then continue end
+            if distance > settings.dodgeRadius or distance < 1 then continue end
             if velocity.Unit:Dot(toMe.Unit) > 0.85 then
                 local timeToImpact = distance / speed
                 if timeToImpact <= settings.dodgeReactionTime then
@@ -633,8 +539,7 @@ RunService.Heartbeat:Connect(function()
                     if hitA and not hitB then dodgeDir = -perp
                     elseif hitA and hitB then continue end
                     hum:MoveTo(myPos + dodgeDir * 10)
-                    dodgeCooldown = tick()
-                    return
+                    dodgeCooldown = tick(); return
                 end
             end
         end
@@ -671,21 +576,16 @@ local function aimbotValidTarget(gameChar)
     if settings.aimbot.teamCheck and gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then return false end
     local char = gameChar.Character
     if not char or not char.IsAlive then return false end
-    local model = char.Model
-    if not model then return false end
+    local model = char.Model; if not model then return false end
     if settings.ignoreForcefield and HasForceField(model) then return false end
-    local part = getAimbotPart(model)
-    if not part then return false end
+    local part = getAimbotPart(model); if not part then return false end
     return true, char, part
 end
 
 local function aimbotFindTarget()
     local viewportCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
-    local localChar = LocalPlayer.Character
-    if not localChar then return nil end
-    local localRoot = localChar:FindFirstChild("HumanoidRootPart")
-    if not localRoot then return nil end
-
+    local localChar = LocalPlayer.Character; if not localChar then return nil end
+    local localRoot = localChar:FindFirstChild("HumanoidRootPart"); if not localRoot then return nil end
     local best, bestScore = nil, math.huge
     for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
         local valid, char, part = aimbotValidTarget(gameChar)
@@ -700,23 +600,15 @@ local function aimbotFindTarget()
                     if onScreen then
                         local fovDist = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
                         score = settings.aimbot.prioritizeClosest and dist or fovDist
-                    else
-                        score = settings.aimbot.prioritizeClosest and dist or (dist + 500)
-                    end
+                    else score = settings.aimbot.prioritizeClosest and dist or (dist + 500) end
                 else
                     if onScreen then
                         local fovDist = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
                         passesFov = fovDist <= settings.aimbot.fov
                         score = settings.aimbot.prioritizeClosest and dist or fovDist
-                    else
-                        passesFov = false
-                        score = math.huge
-                    end
+                    else passesFov = false; score = math.huge end
                 end
-                if passesFov and score < bestScore then
-                    bestScore = score
-                    best = gameChar
-                end
+                if passesFov and score < bestScore then bestScore = score; best = gameChar end
             end
         end
     end
@@ -743,6 +635,7 @@ end
 RunService.RenderStepped:Connect(aimbotUpdate)
 Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
 
+-- ===================== ESP =====================
 local espFolder = Instance.new("Folder")
 espFolder.Name = "SharpESPData"
 pcall(function() espFolder.Parent = game:GetService("CoreGui") end)
@@ -795,6 +688,18 @@ local function ensureESP(gameChar)
     highlight.Enabled = false
     highlight.Parent = chamFolder
     data.highlight = highlight
+
+    -- NEW: Pre-set adornee immediately if character is already loaded
+    local char = gameChar.Character
+    if char and char.Model and char.Model.Parent then
+        local head = char.Model:FindFirstChild("Head")
+        if head then
+            billboard.Adornee = head
+            data.head = head
+        end
+        highlight.Adornee = char.Model
+        data.model = char.Model
+    end
 
     espData[gameChar] = data
     return data
@@ -864,6 +769,7 @@ RunService.Heartbeat:Connect(function()
         if gcPlayer == LocalPlayer then
             if data.billboard then data.billboard.Enabled = false end
             if data.highlight then data.highlight.Enabled = false end
+            data.model = nil; data.head = nil
             continue
         end
 
@@ -871,20 +777,26 @@ RunService.Heartbeat:Connect(function()
         local model = char and char.Model
         local head = model and model:FindFirstChild("Head")
         local hum = model and model:FindFirstChildOfClass("Humanoid")
-        local alive = char and char.IsAlive and hum and hum.Health > 0
 
-        if not model or not head or not alive then
+        -- NEW: lenient alive check + skip unparented models
+        local modelReady = model ~= nil and model.Parent ~= nil
+        local alive = false
+        if hum and hum.Health > 0 then alive = true
+        elseif char and char.IsAlive then alive = true end
+
+        if not modelReady or not head or not alive then
             if data.billboard then data.billboard.Enabled = false end
             if data.highlight then data.highlight.Enabled = false end
+            data.model = nil; data.head = nil
             continue
         end
 
-        if data.model ~= model or data.head ~= head then
-            data.billboard.Adornee = head
-            data.highlight.Adornee = model
-            data.model = model
-            data.head = head
-        end
+        -- NEW: ALWAYS update adornee every frame (idempotent, forces refresh)
+        local adorneeStale = (data.model ~= model) or (data.head ~= head)
+        data.billboard.Adornee = head
+        data.highlight.Adornee = model
+        data.model = model
+        data.head = head
 
         local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
         local isEnemy = (ok and rel == "Enemy")
@@ -892,10 +804,12 @@ RunService.Heartbeat:Connect(function()
         local shouldShow = true
         if settings.espEnemyOnly and not isEnemy then shouldShow = false end
         if settings.espTeamOnly and isEnemy then shouldShow = false end
+
         if shouldShow and localRoot and char.RootPart then
             local dist = (char.RootPart.Position - localRoot.Position).Magnitude
             if dist > settings.espMaxDistance then shouldShow = false end
         end
+
         if not shouldShow then
             if data.billboard then data.billboard.Enabled = false end
             if data.highlight then data.highlight.Enabled = false end
@@ -922,7 +836,13 @@ RunService.Heartbeat:Connect(function()
         if settings.espChams then
             data.highlight.FillColor = color
             data.highlight.OutlineColor = color
-            data.highlight.Enabled = true
+            -- NEW: force refresh if adornee changed (prevents stale render)
+            if adorneeStale then
+                data.highlight.Enabled = false
+                data.highlight.Enabled = true
+            elseif not data.highlight.Enabled then
+                data.highlight.Enabled = true
+            end
         else
             data.highlight.Enabled = false
         end
@@ -953,6 +873,7 @@ task.spawn(function()
     end
 end)
 
+-- ===================== TRAP ESP =====================
 local trapEspFolder = Instance.new("Folder")
 trapEspFolder.Name = "SharpTrapESPData"
 trapEspFolder.Parent = espFolder
@@ -960,7 +881,7 @@ trapEspFolder.Parent = espFolder
 local trapEspCache = {}
 
 local function cleanupAllTrapEsp()
-    for adornee, hl in pairs(trapEspCache) do
+    for _, hl in pairs(trapEspCache) do
         pcall(function() hl:Destroy() end)
     end
     trapEspCache = {}
@@ -1022,8 +943,7 @@ function Library.new()
     self.Main.Position = UDim2.new(0.5, -250, 0.5, -260)
     self.Main.BackgroundColor3 = Color3.fromRGB(18,18,24)
     self.Main.BorderSizePixel = 0
-    self.Main.Active = true
-    self.Main.Draggable = true
+    self.Main.Active = true; self.Main.Draggable = true
     self.Main.Parent = self.ScreenGui
     local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,10); c.Parent = self.Main
     local s = Instance.new("UIStroke"); s.Color = Color3.fromRGB(200,60,60); s.Thickness = 1.5; s.Parent = self.Main
@@ -1031,8 +951,7 @@ function Library.new()
     local titleBar = Instance.new("Frame")
     titleBar.Size = UDim2.new(1,0,0,40)
     titleBar.BackgroundColor3 = Color3.fromRGB(28,28,36)
-    titleBar.BorderSizePixel = 0
-    titleBar.Parent = self.Main
+    titleBar.BorderSizePixel = 0; titleBar.Parent = self.Main
     local tc = Instance.new("UICorner"); tc.CornerRadius = UDim.new(0,10); tc.Parent = titleBar
     local tf = Instance.new("Frame")
     tf.Size = UDim2.new(1,0,0,15); tf.Position = UDim2.new(0,0,1,-15)
@@ -1080,9 +999,7 @@ function Library.new()
         end
     end
 
-    toggleBtn.Activated:Connect(function()
-        self.Main.Visible = true; toggleBtn.Visible = false
-    end)
+    toggleBtn.Activated:Connect(function() self.Main.Visible = true; toggleBtn.Visible = false end)
     closeBtn.Activated:Connect(function()
         self.Main.Visible = false; toggleBtn.Visible = true
         hideAllDropdowns()
@@ -1133,9 +1050,7 @@ function Library:CreateTab(name)
         tabBtn.BackgroundColor3 = Color3.fromRGB(180,40,40)
         tabBtn.TextColor3 = Color3.new(1,1,1)
         updateCanvas()
-        for _, entry in ipairs(self.OpenDropdowns) do
-            pcall(function() entry.hide() end)
-        end
+        for _, entry in ipairs(self.OpenDropdowns) do pcall(function() entry.hide() end) end
     end)
 
     if #self.Tabs == 1 then
@@ -1301,9 +1216,7 @@ function Library:CreateDropdown(parent, text, options, default, callback)
     local lf = Instance.new("Frame")
     lf.Size = UDim2.new(0,140,0,math.min(#options*28,200))
     lf.BackgroundColor3 = Color3.fromRGB(40,40,50)
-    lf.BorderSizePixel = 0
-    lf.Visible = false
-    lf.ZIndex = 10000
+    lf.BorderSizePixel = 0; lf.Visible = false; lf.ZIndex = 10000
     lf.Parent = self.Main
     local lc = Instance.new("UICorner"); lc.CornerRadius = UDim.new(0,4); lc.Parent = lf
 
@@ -1333,22 +1246,16 @@ function Library:CreateDropdown(parent, text, options, default, callback)
     end
 
     dd.Activated:Connect(function()
-        if lf.Visible then
-            lf.Visible = false
+        if lf.Visible then lf.Visible = false
         else
             for _, entry in ipairs(self.OpenDropdowns) do
                 if entry.frame ~= lf then pcall(function() entry.hide() end) end
             end
-            updateListPos()
-            lf.Visible = true
+            updateListPos(); lf.Visible = true
         end
     end)
 
-    table.insert(self.OpenDropdowns, {
-        frame = lf,
-        hide = function() lf.Visible = false end,
-    })
-
+    table.insert(self.OpenDropdowns, { frame = lf, hide = function() lf.Visible = false end })
     return f
 end
 
@@ -1373,12 +1280,8 @@ UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot 
 UI:CreateDropdown(combatTab, "Triggerbot Mode",
     {"Crosshair", "Aimbot", "Silent Aim", "Proximity"}, "Crosshair",
     function(opt) settings.triggerBotMode = opt end)
-UI:CreateSlider(combatTab, "Charge Time (÷100 s)", 10, 300, 150, function(v)
-    settings.chargeTime = v / 100
-end)
-UI:CreateSlider(combatTab, "Knife Trigger Delay (÷100 s)", 50, 300, 120, function(v)
-    settings.knifeTriggerDelay = v / 100
-end)
+UI:CreateSlider(combatTab, "Charge Time (÷100 s)", 10, 300, 150, function(v) settings.chargeTime = v / 100 end)
+UI:CreateSlider(combatTab, "Knife Trigger Delay (÷100 s)", 50, 300, 120, function(v) settings.knifeTriggerDelay = v / 100 end)
 UI:CreateToggle(combatTab, "Auto Shoot (blind spam)", false, function(v) settings.autoShoot = v end)
 UI:CreateToggle(combatTab, "Auto Reload", false, function(v) settings.autoReload = v end)
 UI:CreateToggle(combatTab, "Ignore Forcefield", false, function(v) settings.ignoreForcefield = v end)
@@ -1390,20 +1293,12 @@ UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
 UI:CreateSection(combatTab, "Auto Shoot Traps")
 UI:CreateToggle(combatTab, "Auto Shoot Traps (silent aim)", false, function(v) settings.autoShootTraps = v end)
-UI:CreateSlider(combatTab, "Trap Shoot Range (studs)", 30, 500, 150, function(v)
-    settings.trapShootRange = v
-end)
+UI:CreateSlider(combatTab, "Trap Shoot Range (studs)", 30, 500, 150, function(v) settings.trapShootRange = v end)
 
 UI:CreateSection(combatTab, "Trap Avoidance (Move Out)")
-UI:CreateToggle(combatTab, "Anti-Trap Movement", false, function(v)
-    settings.antiTrap = v
-end)
-UI:CreateSlider(combatTab, "Trap Avoid Radius (studs)", 3, 15, 5, function(v)
-    settings.trapAvoidRadius = v
-end)
-UI:CreateSlider(combatTab, "Trap Danger Radius (studs)", 1, 8, 3, function(v)
-    settings.trapDangerRadius = v
-end)
+UI:CreateToggle(combatTab, "Anti-Trap Movement", false, function(v) settings.antiTrap = v end)
+UI:CreateSlider(combatTab, "Trap Avoid Radius (studs)", 3, 15, 5, function(v) settings.trapAvoidRadius = v end)
+UI:CreateSlider(combatTab, "Trap Danger Radius (studs)", 1, 8, 3, function(v) settings.trapDangerRadius = v end)
 
 UI:CreateSection(combatTab, "Trap Barriers (Block Physics)")
 UI:CreateToggle(combatTab, "Enable Trap Barriers", false, function(v) settings.trapBarriers = v end)
@@ -1414,15 +1309,9 @@ UI:CreateToggle(combatTab, "Shock Mine Barrier", false, function(v) settings.tra
 UI:CreateToggle(combatTab, "Teleport Gate Barrier", false, function(v) settings.trapBarrierTypes.TeleportGate = v end)
 
 UI:CreateSection(combatTab, "Dodge")
-UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v)
-    settings.dodgeKnife = v
-end)
-UI:CreateSlider(combatTab, "Dodge Radius (studs)", 5, 30, 12, function(v)
-    settings.dodgeRadius = v
-end)
-UI:CreateSlider(combatTab, "Dodge Reaction Time (÷100 s)", 10, 50, 25, function(v)
-    settings.dodgeReactionTime = v / 100
-end)
+UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v) settings.dodgeKnife = v end)
+UI:CreateSlider(combatTab, "Dodge Radius (studs)", 5, 30, 12, function(v) settings.dodgeRadius = v end)
+UI:CreateSlider(combatTab, "Dodge Reaction Time (÷100 s)", 10, 50, 25, function(v) settings.dodgeReactionTime = v / 100 end)
 
 UI:CreateSection(aimbotTab, "Aimbot")
 UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
@@ -1455,9 +1344,7 @@ UI:CreateColorPicker(visualTab, "Team Color", Color3.fromRGB(50,255,50), functio
 
 UI:CreateSection(visualTab, "Trap ESP")
 UI:CreateToggle(visualTab, "Trap ESP (highlight)", false, function(v) settings.trapEsp = v end)
-UI:CreateSlider(visualTab, "Trap ESP Range (studs)", 50, 1000, 300, function(v)
-    settings.trapEspMaxDistance = v
-end)
+UI:CreateSlider(visualTab, "Trap ESP Range (studs)", 50, 1000, 300, function(v) settings.trapEspMaxDistance = v end)
 UI:CreateColorPicker(visualTab, "Trap ESP Color", Color3.fromRGB(255,100,0), function(c) settings.trapEspColor = c end)
 
 UI:CreateSection(visualTab, "World")
@@ -1465,4 +1352,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — 'Silent Aim' triggerbot mode added (camera-independent). Select mode = 'Silent Aim' + enable Silent Aim toggle for it to work. All toggles OFF by default.")
+print("[SHARP] Loaded — ESP fix applied (always visible, forces refresh on adornee change). Silent Aim triggerbot mode (camera-independent). All toggles OFF by default.")
