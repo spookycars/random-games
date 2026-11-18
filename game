@@ -66,19 +66,6 @@ local FORCEFIELD_NAMES = {
     godmode = true, bubble = true,
 }
 
--- NEW: Helper to identify smoke/vfx parts
-local SMOKE_NAME_PATTERNS = { "smoke", "smokebomb", "smokecloud", "gas", "fog", "vfx" }
-local function isSmokePart(part)
-    if not part or not part:IsA("BasePart") then return false end
-    -- Ignore parts that are very transparent or non-collidable (common for VFX)
-    if part.Transparency > 0.9 or not part.CanCollide then return true end
-    local n = string.lower(part.Name)
-    for _, pattern in ipairs(SMOKE_NAME_PATTERNS) do
-        if n:find(pattern) then return true end
-    end
-    return false
-end
-
 local function HasForceField(character)
     if not character then return false end
     if character:FindFirstChildOfClass("ForceField") then return true end
@@ -89,34 +76,14 @@ local function HasForceField(character)
     return false
 end
 
--- UPDATED: IsVisible now ignores smoke parts
 local function IsVisible(head)
     local localChar = LocalPlayer.Character
     if not localChar then return false end
     local rootPart = localChar:FindFirstChild("HumanoidRootPart")
     if not rootPart then return false end
-
-    -- Build an ignore list: our own character + any smoke parts near the ray path
-    local ignoreList = { localChar }
-    local origin = rootPart.Position
-    local direction = head.Position - origin
-    -- Find parts in a region covering the ray path to sniff out smoke
-    local region = Region3.new(
-        Vector3.new(math.min(origin.X, head.Position.X), math.min(origin.Y, head.Position.Y), math.min(origin.Z, head.Position.Z)) - Vector3.new(5,5,5),
-        Vector3.new(math.max(origin.X, head.Position.X), math.max(origin.Y, head.Position.Y), math.max(origin.Z, head.Position.Z)) + Vector3.new(5,5,5)
-    )
-    local partsInRegion = workspace:GetPartBoundsInBox(region)
-    for _, part in ipairs(partsInRegion) do
-        if isSmokePart(part) then
-            table.insert(ignoreList, part)
-        end
-    end
-
-    rayParams.FilterDescendantsInstances = ignoreList
-    local result = workspace:Raycast(origin, direction, rayParams)
-    if result then
-        return result.Instance:IsDescendantOf(head.Parent)
-    end
+    rayParams.FilterDescendantsInstances = {localChar}
+    local result = workspace:Raycast(rootPart.Position, head.Position - rootPart.Position, rayParams)
+    if result then return result.Instance:IsDescendantOf(head.Parent) end
     return false
 end
 
@@ -134,7 +101,7 @@ local function GetClosestHead(anyDirection, requireVisible)
         if settings.ignoreForcefield and char.Model and HasForceField(char.Model) then continue end
         local model = char.Model
         local head = model:FindFirstChild("Head")
-        local humanoid = model:FindFirstChildOfClass("Humanoid")
+        local humanoid = model:FindFirstChild("Humanoid")
         if not head or not humanoid or humanoid.Health <= 0 then continue end
         if requireVisible and not IsVisible(head) then continue end
         local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
@@ -722,6 +689,7 @@ local function ensureESP(gameChar)
     highlight.Parent = chamFolder
     data.highlight = highlight
 
+    -- NEW: Pre-set adornee immediately if character is already loaded
     local char = gameChar.Character
     if char and char.Model and char.Model.Parent then
         local head = char.Model:FindFirstChild("Head")
@@ -810,6 +778,7 @@ RunService.Heartbeat:Connect(function()
         local head = model and model:FindFirstChild("Head")
         local hum = model and model:FindFirstChildOfClass("Humanoid")
 
+        -- NEW: lenient alive check + skip unparented models
         local modelReady = model ~= nil and model.Parent ~= nil
         local alive = false
         if hum and hum.Health > 0 then alive = true
@@ -822,6 +791,7 @@ RunService.Heartbeat:Connect(function()
             continue
         end
 
+        -- NEW: ALWAYS update adornee every frame (idempotent, forces refresh)
         local adorneeStale = (data.model ~= model) or (data.head ~= head)
         data.billboard.Adornee = head
         data.highlight.Adornee = model
@@ -834,10 +804,12 @@ RunService.Heartbeat:Connect(function()
         local shouldShow = true
         if settings.espEnemyOnly and not isEnemy then shouldShow = false end
         if settings.espTeamOnly and isEnemy then shouldShow = false end
+
         if shouldShow and localRoot and char.RootPart then
             local dist = (char.RootPart.Position - localRoot.Position).Magnitude
             if dist > settings.espMaxDistance then shouldShow = false end
         end
+
         if not shouldShow then
             if data.billboard then data.billboard.Enabled = false end
             if data.highlight then data.highlight.Enabled = false end
@@ -864,6 +836,7 @@ RunService.Heartbeat:Connect(function()
         if settings.espChams then
             data.highlight.FillColor = color
             data.highlight.OutlineColor = color
+            -- NEW: force refresh if adornee changed (prevents stale render)
             if adorneeStale then
                 data.highlight.Enabled = false
                 data.highlight.Enabled = true
@@ -900,6 +873,7 @@ task.spawn(function()
     end
 end)
 
+-- ===================== TRAP ESP =====================
 local trapEspFolder = Instance.new("Folder")
 trapEspFolder.Name = "SharpTrapESPData"
 trapEspFolder.Parent = espFolder
@@ -1378,4 +1352,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — Smoke bomb bypass added to silent aim wall check. All toggles OFF by default.")
+print("[SHARP] Loaded — ESP fix applied (always visible, forces refresh on adornee change). Silent Aim triggerbot mode (camera-independent). All toggles OFF by default.")
