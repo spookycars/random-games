@@ -13,13 +13,24 @@ local targetLocked = nil
 
 -- ============================================================
 --  SAFE DEFAULT SETTINGS — everything disabled
---  Do NOT enable anything unless you accept the ban risk.
+--  Do NOT enable combat features on your main account.
 -- ============================================================
 local settings = {
     silentAim = false, triggerBot = false, triggerBotMode = "Crosshair",
     autoShoot = false, autoReload = false, maxCharge = false, infiniteAmmo = false,
     silentAimWallCheck = false,
     instantFireRate = false,
+
+    -- Humanization (anti-ban)
+    humanizeFireDelay = true,
+    fireDelayMin = 0.03,
+    fireDelayMax = 0.10,
+    chargeHoldMin = 0.10,
+    chargeHoldMax = 0.25,
+    chargeJitter = true,
+    chargeJitterMin = 0.85,
+    chargeJitterMax = 0.98,
+
     chargeTime = 1.5,
     knifeTriggerDelay = 1.2,
     ignoreForcefield = false,
@@ -140,9 +151,17 @@ local function GetClosestHead(anyDirection, requireVisible)
     return closest, closestPlayer, closestGameChar
 end
 
+-- ===================== COMBAT EVENT HOOK (with jittered charge) =====================
 m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
     if not settings.silentAim and not settings.maxCharge then return end
-    if settings.maxCharge then combatEvent.GameAction.Charge = 1 end
+    if settings.maxCharge then
+        if settings.chargeJitter then
+            combatEvent.GameAction.Charge = settings.chargeJitterMin
+                + math.random() * (settings.chargeJitterMax - settings.chargeJitterMin)
+        else
+            combatEvent.GameAction.Charge = 1
+        end
+    end
     if settings.silentAim then
         local head = GetClosestHead(true, settings.silentAimWallCheck)
         if head then
@@ -152,6 +171,7 @@ m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
     end
 end)
 
+-- ===================== INFINITE AMMO HOOK =====================
 local useClipHooked = false
 local function HookUseClip()
     if useClipHooked then return end
@@ -402,13 +422,19 @@ task.spawn(function()
     end
 end)
 
--- ============ FIRE LOGIC ============
+-- ============ FIRE LOGIC (with humanization) ============
 local chargeStartedAt = {}
 local lastKnifeThrow = 0
 local lastGunShot = 0
+local knifeChargeStart = {}
+local knifeRequiredHold = {}
+local pendingGunFire = {}
 
 local function ResetCharges()
     for k in pairs(chargeStartedAt) do chargeStartedAt[k] = nil end
+    for k in pairs(knifeChargeStart) do knifeChargeStart[k] = nil end
+    for k in pairs(knifeRequiredHold) do knifeRequiredHold[k] = nil end
+    for k in pairs(pendingGunFire) do pendingGunFire[k] = nil end
 end
 
 local function FireKnife(tool)
@@ -421,20 +447,48 @@ local function FireKnife(tool)
     end
 
     if settings.instantFireRate and settings.maxCharge then
-        if tick() - lastKnifeThrow < 0.15 then return false end
-        if state == "Idle" or state == "ChargeHold" or state == "Charge" then
+        -- Step 1: If Idle, enter ChargeHold so the server sees real charge time
+        if state == "Idle" then
+            if type(fsm.Set) == "function" then
+                local ok = pcall(fsm.Set, fsm, "ChargeHold")
+                if ok then
+                    knifeChargeStart[tool] = tick()
+                    knifeRequiredHold[tool] = settings.chargeHoldMin
+                        + math.random() * (settings.chargeHoldMax - settings.chargeHoldMin)
+                end
+            end
+            return false
+        end
+
+        -- Step 2: In Charge/ChargeHold — wait the randomized hold, then throw
+        if state == "Charge" or state == "ChargeHold" then
+            if not knifeChargeStart[tool] then
+                knifeChargeStart[tool] = tick()
+                knifeRequiredHold[tool] = settings.chargeHoldMin
+                    + math.random() * (settings.chargeHoldMax - settings.chargeHoldMin)
+                return false
+            end
+            local elapsed = tick() - knifeChargeStart[tool]
+            if elapsed < (knifeRequiredHold[tool] or settings.chargeHoldMin) then
+                return false
+            end
+
+            if tick() - lastKnifeThrow < 0.15 then return false end
+
+            knifeChargeStart[tool] = nil
+            knifeRequiredHold[tool] = nil
+            chargeStartedAt[tool] = nil
             if type(fsm.Set) == "function" then
                 local ok = pcall(fsm.Set, fsm, "Throw")
-                if ok then
-                    lastKnifeThrow = tick()
-                    chargeStartedAt[tool] = nil
-                end
+                if ok then lastKnifeThrow = tick() end
                 return ok
             end
+            return false
         end
         return false
     end
 
+    -- ===== Normal charge-hold mode =====
     if tick() - lastKnifeThrow < settings.knifeTriggerDelay then
         return false
     end
@@ -486,7 +540,29 @@ local function FireGun(tool)
     end
     if state == "Fire" or state == "Throw" then return false end
 
-    local cooldown = settings.instantFireRate and 0.05 or 0.1
+    -- Humanization: random pre-fire delay so shots aren't frame-perfect
+    if settings.humanizeFireDelay then
+        if not pendingGunFire[tool] then
+            local delay = settings.fireDelayMin
+                + math.random() * (settings.fireDelayMax - settings.fireDelayMin)
+            pendingGunFire[tool] = tick() + delay
+            return false
+        end
+        if tick() < pendingGunFire[tool] then return false end
+        pendingGunFire[tool] = nil
+    end
+
+    -- Jittered cooldown between shots
+    local cooldown
+    if settings.instantFireRate then
+        if settings.humanizeFireDelay then
+            cooldown = 0.05 + math.random() * 0.08   -- 50–130 ms
+        else
+            cooldown = 0.05
+        end
+    else
+        cooldown = 0.1
+    end
     if tick() - lastGunShot < cooldown then return false end
 
     if type(fsm.Set) == "function" then
@@ -1021,8 +1097,8 @@ function Library.new()
     if not self.ScreenGui.Parent then self.ScreenGui.Parent = PG end
 
     self.Main = Instance.new("Frame")
-    self.Main.Size = UDim2.new(0, 500, 0, 520)
-    self.Main.Position = UDim2.new(0.5, -250, 0.5, -260)
+    self.Main.Size = UDim2.new(0, 500, 0, 560)
+    self.Main.Position = UDim2.new(0.5, -250, 0.5, -280)
     self.Main.BackgroundColor3 = Color3.fromRGB(18,18,24)
     self.Main.BorderSizePixel = 0
     self.Main.Active = true
@@ -1353,6 +1429,26 @@ end)
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
 
+UI:CreateSection(combatTab, "Humanization (Anti-Ban)")
+UI:CreateToggle(combatTab, "Enable Humanization Delay", true, function(v)
+    settings.humanizeFireDelay = v
+end)
+UI:CreateSlider(combatTab, "Gun Fire Delay Min (ms)", 10, 200, 30, function(v)
+    settings.fireDelayMin = v / 1000
+end)
+UI:CreateSlider(combatTab, "Gun Fire Delay Max (ms)", 30, 500, 100, function(v)
+    settings.fireDelayMax = v / 1000
+end)
+UI:CreateSlider(combatTab, "Knife Charge Hold Min (ms)", 50, 1000, 100, function(v)
+    settings.chargeHoldMin = v / 1000
+end)
+UI:CreateSlider(combatTab, "Knife Charge Hold Max (ms)", 100, 1500, 250, function(v)
+    settings.chargeHoldMax = v / 1000
+end)
+UI:CreateToggle(combatTab, "Jitter Charge Value (never exactly 1.0)", true, function(v)
+    settings.chargeJitter = v
+end)
+
 UI:CreateSection(combatTab, "Trap Avoidance (Move Out)")
 UI:CreateToggle(combatTab, "Anti-Trap Movement", false, function(v)
     settings.antiTrap = v
@@ -1416,4 +1512,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded in SAFE MODE — ALL features are OFF by default. Do not enable features on your main account.")
+print("[SHARP] Loaded in SAFE MODE — ALL features are OFF by default. Humanization is ON. Do not enable features on your main account.")
