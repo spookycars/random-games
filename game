@@ -34,15 +34,22 @@ local settings = {
     trapDangerRadius = 3,
     trapBarriers = false,
     trapBarrierTypes = {
-        BearTrap = false,
-        Goop = false,
-        Curse = false,
-        ShockMine = false,
-        TeleportGate = false,
+        BearTrap = false, Goop = false, Curse = false,
+        ShockMine = false, TeleportGate = false,
     },
     dodgeKnife = false,
     dodgeRadius = 12,
     dodgeReactionTime = 0.25,
+    -- NEW: Auto weapon swap
+    weaponSwap = {
+        enabled = false,
+        enemyRadius = 60,
+        swapCooldown = 0.3,
+        switchBackDelay = 0.5,
+        maxGunHoldTime = 2.0,
+        useDefensiveSwap = true,
+        defensiveSwapThreshold = 3.0,
+    },
     aimbot = {
         enabled = false, wallCheck = false, teamCheck = false,
         targetPart = "Head", fov = 200, maxDistance = 1000, smoothness = 1,
@@ -689,7 +696,6 @@ local function ensureESP(gameChar)
     highlight.Parent = chamFolder
     data.highlight = highlight
 
-    -- NEW: Pre-set adornee immediately if character is already loaded
     local char = gameChar.Character
     if char and char.Model and char.Model.Parent then
         local head = char.Model:FindFirstChild("Head")
@@ -778,7 +784,6 @@ RunService.Heartbeat:Connect(function()
         local head = model and model:FindFirstChild("Head")
         local hum = model and model:FindFirstChildOfClass("Humanoid")
 
-        -- NEW: lenient alive check + skip unparented models
         local modelReady = model ~= nil and model.Parent ~= nil
         local alive = false
         if hum and hum.Health > 0 then alive = true
@@ -791,7 +796,6 @@ RunService.Heartbeat:Connect(function()
             continue
         end
 
-        -- NEW: ALWAYS update adornee every frame (idempotent, forces refresh)
         local adorneeStale = (data.model ~= model) or (data.head ~= head)
         data.billboard.Adornee = head
         data.highlight.Adornee = model
@@ -836,7 +840,6 @@ RunService.Heartbeat:Connect(function()
         if settings.espChams then
             data.highlight.FillColor = color
             data.highlight.OutlineColor = color
-            -- NEW: force refresh if adornee changed (prevents stale render)
             if adorneeStale then
                 data.highlight.Enabled = false
                 data.highlight.Enabled = true
@@ -922,6 +925,208 @@ task.spawn(function()
     while true do
         task.wait(0.3)
         pcall(updateTrapEsp)
+    end
+end)
+
+-- ============================================================
+--  NEW: AUTO WEAPON SWAP (knife → gun → knife)
+-- ============================================================
+local swapState = {
+    inProgress = false,
+    startedAt = 0,
+    swapBackAt = 0,
+    lastSwapTime = 0,
+    wasThrowing = false,
+}
+
+local function GetEquippedKnife()
+    for _, tool in ipairs(GetAllTools()) do
+        if tool.Equipped and ResolveWeaponType(tool) == "knife" then return tool end
+    end
+    return nil
+end
+
+local function GetEquippedGun()
+    for _, tool in ipairs(GetAllTools()) do
+        if tool.Equipped and ResolveWeaponType(tool) == "gun" then return tool end
+    end
+    return nil
+end
+
+local function FindToolOfType(wType)
+    for _, tool in ipairs(GetAllTools()) do
+        if ResolveWeaponType(tool) == wType then return tool end
+    end
+    return nil
+end
+
+local function FindActualTool(wrappedTool)
+    if not wrappedTool then return nil end
+    if typeof(wrappedTool.Tool) == "Instance" and wrappedTool.Tool:IsA("Tool") then return wrappedTool.Tool end
+    if wrappedTool.Store and typeof(wrappedTool.Store.Tool) == "Instance" and wrappedTool.Store.Tool:IsA("Tool") then
+        return wrappedTool.Store.Tool
+    end
+    local name = (wrappedTool.Setup and wrappedTool.Setup.Name) or wrappedTool.Name
+    if not name then return nil end
+    local char = LocalPlayer.Character
+    if char then
+        for _, child in ipairs(char:GetChildren()) do
+            if child:IsA("Tool") and child.Name == name then return child end
+        end
+    end
+    local backpack = LocalPlayer:FindFirstChild("Backpack")
+    if backpack then
+        for _, child in ipairs(backpack:GetChildren()) do
+            if child:IsA("Tool") and child.Name == name then return child end
+        end
+    end
+    return nil
+end
+
+local function EquipTool(wrappedTool)
+    if not wrappedTool then return false end
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    local actual = FindActualTool(wrappedTool)
+    if not actual then return false end
+    local ok = pcall(function() hum:EquipTool(actual) end)
+    return ok
+end
+
+local function CountEnemiesInRadius(radius)
+    local localChar = LocalPlayer.Character
+    if not localChar then return 0 end
+    local root = localChar:FindFirstChild("HumanoidRootPart")
+    if not root then return 0 end
+    local count = 0
+    for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
+        if gameChar.Player == LocalPlayer then continue end
+        if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
+        local char = gameChar.Character
+        if not char or not char.IsAlive or not char.RootPart then continue end
+        if HasForceField(char.Model) then continue end
+        if (char.RootPart.Position - root.Position).Magnitude <= radius then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function KnifeWillBeReadyIn(seconds)
+    local knife = GetEquippedKnife()
+    if not knife then
+        knife = FindToolOfType("knife")
+        if not knife then return true end
+        return true
+    end
+    local fsm = knife.Store and knife.Store.FSM
+    if not fsm then return true end
+    local state = tostring(fsm.State or "")
+    if state == "Idle" and not chargeStartedAt[knife] then return true end
+    if chargeStartedAt[knife] then
+        local remaining = settings.chargeTime - (tick() - chargeStartedAt[knife])
+        if remaining <= 0 then return true end
+        return remaining <= seconds
+    end
+    local sinceThrow = tick() - lastKnifeThrow
+    local totalCycle = settings.knifeTriggerDelay + settings.chargeTime + 0.2
+    local remaining = totalCycle - sinceThrow
+    if remaining <= 0 then return true end
+    return remaining <= seconds
+end
+
+local function SwapBackToKnife()
+    swapState.inProgress = false
+    swapState.swapBackAt = 0
+    local knife = FindToolOfType("knife")
+    if knife then
+        EquipTool(knife)
+        swapState.lastSwapTime = tick()
+    end
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+
+        if not settings.weaponSwap.enabled then
+            swapState.wasThrowing = false
+            swapState.inProgress = false
+            swapState.swapBackAt = 0
+            continue
+        end
+
+        -- Handle pending swap-back to knife
+        if swapState.inProgress then
+            -- Cancel if user manually swapped away from gun
+            if not GetEquippedGun() then
+                swapState.inProgress = false
+                swapState.swapBackAt = 0
+                continue
+            end
+
+            local heldTime = tick() - swapState.startedAt
+            local minHold = settings.weaponSwap.switchBackDelay
+            local maxHold = settings.weaponSwap.maxGunHoldTime
+
+            if heldTime >= maxHold then
+                SwapBackToKnife()
+            elseif heldTime >= minHold and KnifeWillBeReadyIn(0.15) then
+                SwapBackToKnife()
+            end
+            continue
+        end
+
+        -- Must be on knife to consider swapping
+        local equipped = GetEquippedKnife()
+        if not equipped then
+            swapState.wasThrowing = false
+            continue
+        end
+
+        local fsm = equipped.Store and equipped.Store.FSM
+        if not fsm then continue end
+        local state = tostring(fsm.State or "")
+
+        -- Detect throw completion (was in Throw, now not)
+        local throwComplete = false
+        if state == "Throw" then
+            swapState.wasThrowing = true
+        elseif swapState.wasThrowing then
+            swapState.wasThrowing = false
+            throwComplete = true
+        end
+
+        -- Cooldown between swaps
+        if tick() - swapState.lastSwapTime < settings.weaponSwap.swapCooldown then continue end
+
+        local enemies = CountEnemiesInRadius(settings.weaponSwap.enemyRadius)
+
+        local shouldSwap = false
+
+        if throwComplete and enemies >= 1 then
+            -- Miss OR another player there → swap
+            if not KnifeWillBeReadyIn(0.15) then
+                shouldSwap = true
+            end
+        elseif throwComplete and enemies == 0 and settings.weaponSwap.useDefensiveSwap then
+            -- Clean kill + no enemies → swap only if knife is down for a long time
+            if not KnifeWillBeReadyIn(settings.weaponSwap.defensiveSwapThreshold) then
+                shouldSwap = true
+            end
+        end
+
+        if shouldSwap then
+            local gun = FindToolOfType("gun")
+            if gun then
+                EquipTool(gun)
+                swapState.inProgress = true
+                swapState.startedAt = tick()
+                swapState.lastSwapTime = tick()
+            end
+        end
     end
 end)
 
@@ -1108,248 +1313,4 @@ end
 function Library:CreateSlider(parent, text, min, max, default, callback)
     local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,56)
     f.BackgroundColor3 = Color3.fromRGB(28,28,36); f.BorderSizePixel = 0; f.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = f
-    local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(1,-80,0,20); l.Position = UDim2.new(0,12,0,6)
-    l.BackgroundTransparency = 1; l.Text = text
-    l.TextColor3 = Color3.fromRGB(220,220,220); l.Font = Enum.Font.Gotham
-    l.TextSize = 13; l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f
-    local vl = Instance.new("TextLabel")
-    vl.Size = UDim2.new(0,60,0,20); vl.Position = UDim2.new(1,-70,0,6)
-    vl.BackgroundTransparency = 1; vl.Text = tostring(default)
-    vl.TextColor3 = Color3.fromRGB(255,100,100); vl.Font = Enum.Font.GothamBold
-    vl.TextSize = 13; vl.TextXAlignment = Enum.TextXAlignment.Right; vl.Parent = f
-
-    local track = Instance.new("Frame")
-    track.Size = UDim2.new(1,-24,0,6); track.Position = UDim2.new(0,12,0,36)
-    track.BackgroundColor3 = Color3.fromRGB(50,50,60); track.BorderSizePixel = 0; track.Parent = f
-    local trc = Instance.new("UICorner"); trc.CornerRadius = UDim.new(1,0); trc.Parent = track
-
-    local a0 = (default-min)/(max-min)
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.new(a0,0,1,0); fill.BackgroundColor3 = Color3.fromRGB(180,40,40)
-    fill.BorderSizePixel = 0; fill.Parent = track
-    local fc = Instance.new("UICorner"); fc.CornerRadius = UDim.new(1,0); fc.Parent = fill
-
-    local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0,16,0,16); knob.Position = UDim2.new(a0,-8,0.5,-8)
-    knob.BackgroundColor3 = Color3.new(1,1,1); knob.BorderSizePixel = 0; knob.Parent = track
-    local kc = Instance.new("UICorner"); kc.CornerRadius = UDim.new(1,0); kc.Parent = knob
-
-    local value = default; local dragging = false
-    local function setX(x)
-        local ax = track.AbsolutePosition.X; local w = track.AbsoluteSize.X
-        local a = math.clamp((x-ax)/w, 0, 1)
-        value = math.floor(min + (max-min)*a + 0.5)
-        vl.Text = tostring(value)
-        fill.Size = UDim2.new(a,0,1,0); knob.Position = UDim2.new(a,-8,0.5,-8)
-        if callback then callback(value) end
-    end
-    track.InputBegan:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
-            dragging = true; setX(inp.Position.X)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(inp)
-        if dragging and (inp.UserInputType == Enum.UserInputType.MouseMovement or inp.UserInputType == Enum.UserInputType.Touch) then
-            setX(inp.Position.X)
-        end
-    end)
-    UserInputService.InputEnded:Connect(function(inp)
-        if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then dragging = false end
-    end)
-    return f
-end
-
-function Library:CreateColorPicker(parent, text, default, callback)
-    local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,36)
-    f.BackgroundColor3 = Color3.fromRGB(28,28,36); f.BorderSizePixel = 0; f.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = f
-    local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(1,-160,1,0); l.Position = UDim2.new(0,12,0,0)
-    l.BackgroundTransparency = 1; l.Text = text
-    l.TextColor3 = Color3.fromRGB(220,220,220); l.Font = Enum.Font.Gotham
-    l.TextSize = 13; l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f
-    local hi = Instance.new("TextBox")
-    hi.Size = UDim2.new(0,85,1,-8); hi.Position = UDim2.new(1,-130,0,4)
-    hi.BackgroundColor3 = Color3.fromRGB(40,40,50); hi.BorderSizePixel = 0
-    hi.Text = string.format("%02X%02X%02X", math.floor(default.R*255), math.floor(default.G*255), math.floor(default.B*255))
-    hi.TextColor3 = Color3.fromRGB(220,220,220); hi.Font = Enum.Font.Gotham
-    hi.TextSize = 12; hi.ClearTextOnFocus = false; hi.Parent = f
-    local hc = Instance.new("UICorner"); hc.CornerRadius = UDim.new(0,4); hc.Parent = hi
-    local sw = Instance.new("Frame")
-    sw.Size = UDim2.new(0,30,1,-8); sw.Position = UDim2.new(1,-42,0,4)
-    sw.BackgroundColor3 = default; sw.BorderSizePixel = 0; sw.Parent = f
-    local sc = Instance.new("UICorner"); sc.CornerRadius = UDim.new(0,4); sc.Parent = sw
-    local cur = default
-    hi.FocusLost:Connect(function()
-        local hex = hi.Text:gsub("#",""):upper()
-        if #hex == 6 and hex:match("^%x+$") then
-            cur = Color3.fromRGB(tonumber(hex:sub(1,2),16), tonumber(hex:sub(3,4),16), tonumber(hex:sub(5,6),16))
-            sw.BackgroundColor3 = cur
-            if callback then callback(cur) end
-        else
-            hi.Text = string.format("%02X%02X%02X", math.floor(cur.R*255), math.floor(cur.G*255), math.floor(cur.B*255))
-        end
-    end)
-    return f
-end
-
-function Library:CreateDropdown(parent, text, options, default, callback)
-    local f = Instance.new("Frame"); f.Size = UDim2.new(1,-10,0,36)
-    f.BackgroundColor3 = Color3.fromRGB(28,28,36); f.BorderSizePixel = 0; f.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = f
-    local l = Instance.new("TextLabel")
-    l.Size = UDim2.new(1,-160,1,0); l.Position = UDim2.new(0,12,0,0)
-    l.BackgroundTransparency = 1; l.Text = text
-    l.TextColor3 = Color3.fromRGB(220,220,220); l.Font = Enum.Font.Gotham
-    l.TextSize = 13; l.TextXAlignment = Enum.TextXAlignment.Left; l.Parent = f
-
-    local dd = Instance.new("TextButton")
-    dd.Size = UDim2.new(0,140,1,-8); dd.Position = UDim2.new(1,-150,0,4)
-    dd.BackgroundColor3 = Color3.fromRGB(40,40,50)
-    dd.Text = default or options[1]
-    dd.TextColor3 = Color3.fromRGB(220,220,220); dd.Font = Enum.Font.Gotham
-    dd.TextSize = 12; dd.Parent = f
-    local dc = Instance.new("UICorner"); dc.CornerRadius = UDim.new(0,4); dc.Parent = dd
-
-    local lf = Instance.new("Frame")
-    lf.Size = UDim2.new(0,140,0,math.min(#options*28,200))
-    lf.BackgroundColor3 = Color3.fromRGB(40,40,50)
-    lf.BorderSizePixel = 0; lf.Visible = false; lf.ZIndex = 10000
-    lf.Parent = self.Main
-    local lc = Instance.new("UICorner"); lc.CornerRadius = UDim.new(0,4); lc.Parent = lf
-
-    local scroll = Instance.new("ScrollingFrame")
-    scroll.Size = UDim2.new(1,0,1,0); scroll.BackgroundTransparency = 1
-    scroll.ScrollBarThickness = 3; scroll.CanvasSize = UDim2.new(0,0,0,#options*28)
-    scroll.ZIndex = 10001; scroll.Parent = lf
-
-    for i, opt in ipairs(options) do
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(1,0,0,28); btn.Position = UDim2.new(0,0,0,(i-1)*28)
-        btn.BackgroundColor3 = Color3.fromRGB(50,50,60); btn.BorderSizePixel = 0
-        btn.Text = opt; btn.TextColor3 = Color3.fromRGB(220,220,220)
-        btn.Font = Enum.Font.Gotham; btn.TextSize = 12
-        btn.ZIndex = 10002; btn.Parent = scroll
-        btn.Activated:Connect(function()
-            dd.Text = opt; lf.Visible = false
-            if callback then callback(opt) end
-        end)
-    end
-
-    local function updateListPos()
-        local ddAbs = dd.AbsolutePosition
-        local ddAbsSize = dd.AbsoluteSize
-        local mainAbs = self.Main.AbsolutePosition
-        lf.Position = UDim2.new(0, ddAbs.X - mainAbs.X, 0, ddAbs.Y - mainAbs.Y + ddAbsSize.Y + 2)
-    end
-
-    dd.Activated:Connect(function()
-        if lf.Visible then lf.Visible = false
-        else
-            for _, entry in ipairs(self.OpenDropdowns) do
-                if entry.frame ~= lf then pcall(function() entry.hide() end) end
-            end
-            updateListPos(); lf.Visible = true
-        end
-    end)
-
-    table.insert(self.OpenDropdowns, { frame = lf, hide = function() lf.Visible = false end })
-    return f
-end
-
-function Library:CreateButton(parent, text, callback)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(1,-10,0,34); b.BackgroundColor3 = Color3.fromRGB(180,40,40)
-    b.Text = text; b.TextColor3 = Color3.new(1,1,1)
-    b.Font = Enum.Font.GothamBold; b.TextSize = 13; b.Parent = parent
-    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0,6); c.Parent = b
-    b.Activated:Connect(function() if callback then callback() end end)
-    return b
-end
-
--- ===================== BUILD UI =====================
-local UI = Library.new()
-local combatTab = UI:CreateTab("Combat")
-local aimbotTab = UI:CreateTab("Aimbot")
-local visualTab = UI:CreateTab("Visuals")
-
-UI:CreateSection(combatTab, "Fire Mode")
-UI:CreateToggle(combatTab, "Triggerbot", false, function(v) settings.triggerBot = v end)
-UI:CreateDropdown(combatTab, "Triggerbot Mode",
-    {"Crosshair", "Aimbot", "Silent Aim", "Proximity"}, "Crosshair",
-    function(opt) settings.triggerBotMode = opt end)
-UI:CreateSlider(combatTab, "Charge Time (÷100 s)", 10, 300, 150, function(v) settings.chargeTime = v / 100 end)
-UI:CreateSlider(combatTab, "Knife Trigger Delay (÷100 s)", 50, 300, 120, function(v) settings.knifeTriggerDelay = v / 100 end)
-UI:CreateToggle(combatTab, "Auto Shoot (blind spam)", false, function(v) settings.autoShoot = v end)
-UI:CreateToggle(combatTab, "Auto Reload", false, function(v) settings.autoReload = v end)
-UI:CreateToggle(combatTab, "Ignore Forcefield", false, function(v) settings.ignoreForcefield = v end)
-
-UI:CreateSection(combatTab, "Combat")
-UI:CreateToggle(combatTab, "Silent Aim (visible heads, any angle)", false, function(v) settings.silentAim = v end)
-UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
-UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
-
-UI:CreateSection(combatTab, "Auto Shoot Traps")
-UI:CreateToggle(combatTab, "Auto Shoot Traps (silent aim)", false, function(v) settings.autoShootTraps = v end)
-UI:CreateSlider(combatTab, "Trap Shoot Range (studs)", 30, 500, 150, function(v) settings.trapShootRange = v end)
-
-UI:CreateSection(combatTab, "Trap Avoidance (Move Out)")
-UI:CreateToggle(combatTab, "Anti-Trap Movement", false, function(v) settings.antiTrap = v end)
-UI:CreateSlider(combatTab, "Trap Avoid Radius (studs)", 3, 15, 5, function(v) settings.trapAvoidRadius = v end)
-UI:CreateSlider(combatTab, "Trap Danger Radius (studs)", 1, 8, 3, function(v) settings.trapDangerRadius = v end)
-
-UI:CreateSection(combatTab, "Trap Barriers (Block Physics)")
-UI:CreateToggle(combatTab, "Enable Trap Barriers", false, function(v) settings.trapBarriers = v end)
-UI:CreateToggle(combatTab, "Bear Trap Barrier", false, function(v) settings.trapBarrierTypes.BearTrap = v end)
-UI:CreateToggle(combatTab, "Goop Barrier", false, function(v) settings.trapBarrierTypes.Goop = v end)
-UI:CreateToggle(combatTab, "Curse Barrier", false, function(v) settings.trapBarrierTypes.Curse = v end)
-UI:CreateToggle(combatTab, "Shock Mine Barrier", false, function(v) settings.trapBarrierTypes.ShockMine = v end)
-UI:CreateToggle(combatTab, "Teleport Gate Barrier", false, function(v) settings.trapBarrierTypes.TeleportGate = v end)
-
-UI:CreateSection(combatTab, "Dodge")
-UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v) settings.dodgeKnife = v end)
-UI:CreateSlider(combatTab, "Dodge Radius (studs)", 5, 30, 12, function(v) settings.dodgeRadius = v end)
-UI:CreateSlider(combatTab, "Dodge Reaction Time (÷100 s)", 10, 50, 25, function(v) settings.dodgeReactionTime = v / 100 end)
-
-UI:CreateSection(aimbotTab, "Aimbot")
-UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
-UI:CreateToggle(aimbotTab, "Wall Check", false, function(v) settings.aimbot.wallCheck = v end)
-UI:CreateToggle(aimbotTab, "Team Check (Enemy Only)", false, function(v) settings.aimbot.teamCheck = v end)
-UI:CreateToggle(aimbotTab, "Prioritize Closest", false, function(v) settings.aimbot.prioritizeClosest = v end)
-UI:CreateToggle(aimbotTab, "Infinite Range", false, function(v) settings.aimbot.infiniteRange = v end)
-UI:CreateToggle(aimbotTab, "Aim Behind (360°)", false, function(v) settings.aimbot.aimBehind = v end)
-UI:CreateDropdown(aimbotTab, "Target Part",
-    {"Head","HumanoidRootPart","Torso","UpperTorso","LowerTorso"},
-    "Head", function(opt) settings.aimbot.targetPart = opt end)
-UI:CreateSlider(aimbotTab, "FOV", 50, 1000, 200, function(v) settings.aimbot.fov = v end)
-UI:CreateSlider(aimbotTab, "Max Distance", 50, 2000, 1000, function(v) settings.aimbot.maxDistance = v end)
-UI:CreateSlider(aimbotTab, "Smoothness (÷100)", 1, 100, 100, function(v) settings.aimbot.smoothness = v / 100 end)
-UI:CreateSlider(aimbotTab, "Wall Check Precision", 1, 10, 3, function(v) settings.aimbot.wallCheckPrecision = v end)
-
-UI:CreateSection(visualTab, "ESP")
-UI:CreateToggle(visualTab, "Enable ESP", false, function(v) settings.espEnabled = v end)
-UI:CreateToggle(visualTab, "Enemy Only", false, function(v) settings.espEnemyOnly = v; if v then settings.espTeamOnly = false end end)
-UI:CreateToggle(visualTab, "Team Only", false, function(v) settings.espTeamOnly = v; if v then settings.espEnemyOnly = false end end)
-UI:CreateSlider(visualTab, "Max Distance", 50, 2000, 1000, function(v) settings.espMaxDistance = v end)
-UI:CreateSection(visualTab, "ESP Options")
-UI:CreateToggle(visualTab, "Names", false, function(v) settings.espNames = v end)
-UI:CreateToggle(visualTab, "Distance", false, function(v) settings.espDistance = v end)
-UI:CreateToggle(visualTab, "Health", false, function(v) settings.espHealth = v end)
-UI:CreateToggle(visualTab, "Chams (Outline)", false, function(v) settings.espChams = v end)
-UI:CreateSection(visualTab, "ESP Colors")
-UI:CreateColorPicker(visualTab, "Enemy Color", Color3.fromRGB(255,50,50), function(c) settings.espEnemyColor = c end)
-UI:CreateColorPicker(visualTab, "Team Color", Color3.fromRGB(50,255,50), function(c) settings.espTeamColor = c end)
-
-UI:CreateSection(visualTab, "Trap ESP")
-UI:CreateToggle(visualTab, "Trap ESP (highlight)", false, function(v) settings.trapEsp = v end)
-UI:CreateSlider(visualTab, "Trap ESP Range (studs)", 50, 1000, 300, function(v) settings.trapEspMaxDistance = v end)
-UI:CreateColorPicker(visualTab, "Trap ESP Color", Color3.fromRGB(255,100,0), function(c) settings.trapEspColor = c end)
-
-UI:CreateSection(visualTab, "World")
-UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targetHighlight = v; if not v then clearTargetHighlight() end end)
-UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
-UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
-
-print("[SHARP] Loaded — ESP fix applied (always visible, forces refresh on adornee change). Silent Aim triggerbot mode (camera-independent). All toggles OFF by default.")
+    local c = Instance.new("UIC
