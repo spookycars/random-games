@@ -672,12 +672,10 @@ RunService.RenderStepped:Connect(aimbotUpdate)
 Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
 
 -- ============================================================
---  ESP — Highlight based, MM2 self-healing pattern
---  Key rules:
---   1. Iterate Players:GetPlayers() every frame — never miss anyone
---   2. Adornee BEFORE Parent — fixes first-render bug
---   3. Destroy + recreate when invalid — no flags, no toggles
---   4. Fallback to player.Character if Madwork wrapper is nil
+--  ESP — Highlight with DescendantAdded hook for part replication
+--  FIX: Highlight snapshots parts at Adornee-assignment time.
+--       Hook DescendantAdded on the model → force-recreate on
+--       new BasePart → catches parts that replicate late.
 -- ============================================================
 local espFolder = Instance.new("Folder")
 espFolder.Name = "SharpESPData"
@@ -689,30 +687,30 @@ chamFolder.Name = "SharpChamData"
 pcall(function() chamFolder.Parent = game:GetService("CoreGui") end)
 if not chamFolder.Parent then chamFolder.Parent = PG end
 
-local espState = {}  -- keyed by Player
+local espState = {}
 
-local function makeHighlight(model, color)
+local function createHighlightFor(player, model, color)
     local h = Instance.new("Highlight")
-    h.Name = "SharpCham"
+    h.Name = "SharpCham_" .. player.Name
     h.FillColor = color
     h.OutlineColor = color
     h.FillTransparency = 0.55
     h.OutlineTransparency = 0
     h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    h.Adornee = model          -- BEFORE parent
+    h.Adornee = model
     h.Enabled = true
-    h.Parent = chamFolder       -- parent last
+    h.Parent = chamFolder
     return h
 end
 
-local function makeBillboard(player, head, color)
+local function createBillboardFor(player, head, color)
     local bb = Instance.new("BillboardGui")
     bb.Name = "SharpESP_" .. player.Name
     bb.Size = UDim2.new(0, 200, 0, 28)
     bb.StudsOffset = Vector3.new(0, 2.5, 0)
     bb.AlwaysOnTop = true
     bb.MaxDistance = math.huge
-    bb.Adornee = head            -- BEFORE parent
+    bb.Adornee = head
     bb.Parent = espFolder
 
     local lbl = Instance.new("TextLabel")
@@ -724,11 +722,9 @@ local function makeBillboard(player, head, color)
     lbl.TextColor3 = color
     lbl.Text = ""
     lbl.Parent = bb
-
     return bb, lbl
 end
 
--- Look up model: try Madwork wrapper first, fall back to player.Character
 local function getPlayerModel(player)
     local ok, list = pcall(function() return m_GameCharacterController.GetGameCharacters() end)
     if ok and list then
@@ -748,15 +744,25 @@ local function getPlayerModel(player)
     return nil, nil
 end
 
-local function clearPlayerState(player)
-    local state = espState[player]
+local function destroyState(state)
     if not state then return end
     if state.billboard then pcall(function() state.billboard:Destroy() end) end
     if state.highlight then pcall(function() state.highlight:Destroy() end) end
-    espState[player] = nil
+    if state.partHook then pcall(function() state.partHook:Disconnect() end) end
 end
 
--- Target highlight
+local function clearPlayerState(player)
+    local state = espState[player]
+    if state then
+        destroyState(state)
+        espState[player] = nil
+    end
+end
+
+Players.PlayerRemoving:Connect(function(player)
+    clearPlayerState(player)
+end)
+
 local currentTargetHighlight = nil
 local currentTargetModel = nil
 
@@ -784,16 +790,9 @@ local function applyTargetHighlight(model)
     currentTargetModel = model
 end
 
-Players.PlayerRemoving:Connect(function(player)
-    clearPlayerState(player)
-end)
-
 RunService.Heartbeat:Connect(function()
-    -- Tear down everything if ESP off
     if not settings.espEnabled then
-        for player, _ in pairs(espState) do
-            clearPlayerState(player)
-        end
+        for player, _ in pairs(espState) do clearPlayerState(player) end
         clearTargetHighlight()
         return
     end
@@ -803,7 +802,6 @@ RunService.Heartbeat:Connect(function()
     local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
     local localAlive = localHum and localHum.Health > 0
 
-    -- Iterate ALL players every frame — not just Madwork wrappers
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then
             clearPlayerState(player)
@@ -817,13 +815,11 @@ RunService.Heartbeat:Connect(function()
             hum = model:FindFirstChildOfClass("Humanoid")
         end
 
-        -- Invalid → tear down and skip
         if not model or not head or not hum or hum.Health <= 0 then
             clearPlayerState(player)
             continue
         end
 
-        -- Relationship / team check
         local ok, rel = pcall(function()
             if gameChar and gameChar.GamePlayer then
                 return gameChar.GamePlayer:GetLocalRelationship()
@@ -831,19 +827,13 @@ RunService.Heartbeat:Connect(function()
             return nil
         end)
         local isEnemy
-        if ok and rel == "Enemy" then
-            isEnemy = true
-        elseif ok and rel ~= nil then
-            isEnemy = false
+        if ok and rel == "Enemy" then isEnemy = true
+        elseif ok and rel ~= nil then isEnemy = false
         else
-            -- Fallback: compare team colors
             local myTeam = LocalPlayer.TeamColor
             local theirTeam = player.TeamColor
-            if myTeam and theirTeam then
-                isEnemy = (theirTeam ~= myTeam)
-            else
-                isEnemy = true
-            end
+            if myTeam and theirTeam then isEnemy = (theirTeam ~= myTeam)
+            else isEnemy = true end
         end
 
         local shouldShow = true
@@ -863,46 +853,76 @@ RunService.Heartbeat:Connect(function()
 
         local color = isEnemy and settings.espEnemyColor or settings.espTeamColor
 
-        -- Ensure state exists
         local state = espState[player]
         if not state then
-            state = { billboard = nil, label = nil, highlight = nil, highlightModel = nil }
+            state = {
+                billboard = nil, label = nil, highlight = nil,
+                highlightModel = nil,
+                partHook = nil, partHookModel = nil,
+                forceRecreate = false, recreatePending = false,
+            }
             espState[player] = state
         end
 
-        -- === HIGHLIGHT: destroy + recreate if wrong model or missing ===
-        local highlightInvalid = (not state.highlight)
+        -- Handle queued force-recreate (from DescendantAdded hook)
+        if state.forceRecreate and not state.recreatePending then
+            state.recreatePending = true
+            task.delay(0.2, function()
+                local s = espState[player]
+                if s and s.highlight and s.highlightModel == model then
+                    pcall(function() s.highlight:Destroy() end)
+                    s.highlight = createHighlightFor(player, model, color)
+                end
+                if s then
+                    s.forceRecreate = false
+                    s.recreatePending = false
+                end
+            end)
+        end
+
+        -- Create or recreate highlight if invalid
+        local needsCreate = (not state.highlight)
             or (not state.highlight.Parent)
             or (state.highlightModel ~= model)
 
-        if highlightInvalid then
+        if needsCreate then
             if state.highlight then pcall(function() state.highlight:Destroy() end) end
-            state.highlight = makeHighlight(model, color)
+            state.highlight = createHighlightFor(player, model, color)
             state.highlightModel = model
+
+            -- FIX: Hook DescendantAdded so late-arriving parts trigger a recreate
+            if state.partHook then pcall(function() state.partHook:Disconnect() end) end
+            state.partHookModel = model
+            state.partHook = model.DescendantAdded:Connect(function(desc)
+                if desc:IsA("BasePart") then
+                    local s = espState[player]
+                    if s and s.highlight then
+                        s.forceRecreate = true
+                    end
+                end
+            end)
         else
-            -- Update color live (user might have changed it)
             state.highlight.FillColor = color
             state.highlight.OutlineColor = color
         end
 
-        -- Apply cham visibility
         if state.highlight then
             state.highlight.Enabled = settings.espChams
         end
 
-        -- === BILLBOARD: destroy + recreate if wrong head or missing ===
-        local billboardInvalid = (not state.billboard)
+        -- Billboard
+        local needsBb = (not state.billboard)
             or (not state.billboard.Parent)
             or (state.billboard.Adornee ~= head)
 
-        if billboardInvalid then
+        if needsBb then
             if state.billboard then pcall(function() state.billboard:Destroy() end) end
-            state.billboard, state.label = makeBillboard(player, head, color)
+            state.billboard, state.label = createBillboardFor(player, head, color)
         else
             state.label.TextColor3 = color
         end
 
-        -- Update label text
+        -- Label text
         if state.label then
             local parts = {}
             if settings.espNames then table.insert(parts, player.Name) end
@@ -914,7 +934,6 @@ RunService.Heartbeat:Connect(function()
         end
     end
 
-    -- Target highlight
     if settings.targetHighlight then
         local _, _, gameChar = GetClosestTarget(true, false, settings.silentAimPart)
         if gameChar and gameChar.Character and gameChar.Character.Model then
@@ -1411,4 +1430,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — Highlight ESP rewritten with MM2 self-healing pattern. All toggles OFF by default.")
+print("[SHARP] Loaded — ESP Highlight now hooks DescendantAdded to catch late-replicated parts. All toggles OFF by default.")
