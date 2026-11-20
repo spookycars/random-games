@@ -13,6 +13,7 @@ local targetLocked = nil
 
 local settings = {
     silentAim = false, triggerBot = false, triggerBotMode = "Crosshair",
+    silentAimPart = "Head",  -- NEW: Head / Torso / UpperTorso / LowerTorso / HumanoidRootPart / Random
     autoShoot = false, autoReload = false, infiniteAmmo = false,
     chargeTime = 1.5,
     knifeTriggerDelay = 1.2,
@@ -40,16 +41,6 @@ local settings = {
     dodgeKnife = false,
     dodgeRadius = 12,
     dodgeReactionTime = 0.25,
-    -- NEW: Auto weapon swap
-    weaponSwap = {
-        enabled = false,
-        enemyRadius = 60,
-        swapCooldown = 0.3,
-        switchBackDelay = 0.5,
-        maxGunHoldTime = 2.0,
-        useDefensiveSwap = true,
-        defensiveSwapThreshold = 3.0,
-    },
     aimbot = {
         enabled = false, wallCheck = false, teamCheck = false,
         targetPart = "Head", fov = 200, maxDistance = 1000, smoothness = 1,
@@ -94,7 +85,36 @@ local function IsVisible(head)
     return false
 end
 
-local function GetClosestHead(anyDirection, requireVisible)
+-- NEW: resolve a body part by name, with R6/R15 handling and Random
+local function GetBodyPart(model, partName)
+    if not model then return nil end
+    if partName == "Random" then
+        local candidates = {
+            "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart",
+            "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg",
+            "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg",
+        }
+        local available = {}
+        for _, p in ipairs(candidates) do
+            local inst = model:FindFirstChild(p)
+            if inst and inst:IsA("BasePart") then table.insert(available, inst) end
+        end
+        if #available > 0 then return available[math.random(1, #available)] end
+        return model:FindFirstChild("Head")
+    elseif partName == "Torso" then
+        return model:FindFirstChild("Torso")
+            or model:FindFirstChild("UpperTorso")
+            or model:FindFirstChild("LowerTorso")
+    else
+        local p = model:FindFirstChild(partName)
+        if p and p:IsA("BasePart") then return p end
+        return model:FindFirstChild("Head")
+    end
+end
+
+-- NEW: GetClosestTarget — takes a part name (defaults to Head)
+local function GetClosestTarget(anyDirection, requireVisible, partName)
+    partName = partName or "Head"
     local closest, closestDist, closestPlayer, closestGameChar = nil, math.huge, nil, nil
     local localChar = LocalPlayer.Character
     local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
@@ -107,23 +127,34 @@ local function GetClosestHead(anyDirection, requireVisible)
         if not char or not char.IsAlive then continue end
         if settings.ignoreForcefield and char.Model and HasForceField(char.Model) then continue end
         local model = char.Model
-        local head = model:FindFirstChild("Head")
+        if not model then continue end
         local humanoid = model:FindFirstChild("Humanoid")
-        if not head or not humanoid or humanoid.Health <= 0 then continue end
-        if requireVisible and not IsVisible(head) then continue end
-        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+        if not humanoid or humanoid.Health <= 0 then continue end
+        local targetPart = GetBodyPart(model, partName)
+        if not targetPart then continue end
+        if requireVisible then
+            local headForVis = model:FindFirstChild("Head") or targetPart
+            if not IsVisible(headForVis) then continue end
+        end
+        local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
         local score
         if onScreen then
             score = (Vector2.new(screenPos.X, screenPos.Y) - camCenter).Magnitude
         elseif anyDirection then
-            score = 100000 + (head.Position - localRoot.Position).Magnitude
+            score = 100000 + (targetPart.Position - localRoot.Position).Magnitude
         else continue end
         if score < closestDist then
-            closestDist = score; closest = head
-            closestPlayer = gameChar.Player; closestGameChar = gameChar
+            closestDist = score
+            closest = targetPart
+            closestPlayer = gameChar.Player
+            closestGameChar = gameChar
         end
     end
     return closest, closestPlayer, closestGameChar
+end
+
+local function GetClosestHead(anyDirection, requireVisible)
+    return GetClosestTarget(anyDirection, requireVisible, "Head")
 end
 
 local TRAP_NAME_PATTERNS = { "trap", "goop", "curse", "mine", "shock", "slow", "web", "snare" }
@@ -195,9 +226,10 @@ m_CombatClient.OnLocalEvent:Connect(function(combatEvent)
         end
     end
     if settings.silentAim then
-        local head = GetClosestHead(true, true)
-        if head then
-            combatEvent.GameAction.Direction = (head.Position - throwPos).Unit
+        -- NEW: uses the configured silent aim part
+        local part = GetClosestTarget(true, true, settings.silentAimPart)
+        if part then
+            combatEvent.GameAction.Direction = (part.Position - throwPos).Unit
         end
     end
 end)
@@ -453,7 +485,7 @@ task.spawn(function()
             if settings.triggerBotMode == "Crosshair" then shouldFire = IsCrosshairOnEnemy()
             elseif settings.triggerBotMode == "Aimbot" then shouldFire = settings.aimbot.enabled and targetLocked ~= nil
             elseif settings.triggerBotMode == "Silent Aim" then
-                if settings.silentAim then shouldFire = GetClosestHead(true, true) ~= nil end
+                if settings.silentAim then shouldFire = GetClosestTarget(true, true, settings.silentAimPart) ~= nil end
             else
                 shouldFire = GetClosestHead(false, true) ~= nil
             end
@@ -642,7 +674,9 @@ end
 RunService.RenderStepped:Connect(aimbotUpdate)
 Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
 
--- ===================== ESP =====================
+-- ============================================================
+--  ESP — REWRITTEN with proper Highlight refresh
+-- ============================================================
 local espFolder = Instance.new("Folder")
 espFolder.Name = "SharpESPData"
 pcall(function() espFolder.Parent = game:GetService("CoreGui") end)
@@ -663,19 +697,34 @@ local function destroyESP(gameChar)
     espData[gameChar] = nil
 end
 
+-- NEW: build a fresh Highlight for a given model.
+-- Parent FIRST, then Adornee, then Enabled=false (flipped to true next frame).
+local function createHighlightFor(gameChar, model, color)
+    local playerName = (gameChar.Player and gameChar.Player.Name) or "unknown"
+    local h = Instance.new("Highlight")
+    h.Name = "SharpCham_" .. playerName
+    h.FillTransparency = 0.55
+    h.OutlineTransparency = 0
+    h.FillColor = color
+    h.OutlineColor = color
+    h.Enabled = false
+    h.Parent = chamFolder    -- parent first
+    h.Adornee = model        -- then adornee
+    return h
+end
+
 local function ensureESP(gameChar)
     if espData[gameChar] then return espData[gameChar] end
-    local data = { head = nil, model = nil }
+    local playerName = (gameChar.Player and gameChar.Player.Name) or "unknown"
 
     local billboard = Instance.new("BillboardGui")
-    billboard.Name = "SharpESP_" .. (gameChar.Player and gameChar.Player.Name or "unknown")
+    billboard.Name = "SharpESP_" .. playerName
     billboard.Size = UDim2.new(0, 200, 0, 28)
     billboard.StudsOffset = Vector3.new(0, 2.5, 0)
     billboard.AlwaysOnTop = true
     billboard.MaxDistance = math.huge
     billboard.Enabled = false
     billboard.Parent = espFolder
-    data.billboard = billboard
 
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, 0, 1, 0)
@@ -686,25 +735,29 @@ local function ensureESP(gameChar)
     label.TextColor3 = Color3.new(1, 1, 1)
     label.Text = ""
     label.Parent = billboard
-    data.label = label
 
-    local highlight = Instance.new("Highlight")
-    highlight.Name = "SharpCham_" .. (gameChar.Player and gameChar.Player.Name or "unknown")
-    highlight.FillTransparency = 0.55
-    highlight.OutlineTransparency = 0
-    highlight.Enabled = false
-    highlight.Parent = chamFolder
-    data.highlight = highlight
+    local data = {
+        player = gameChar.Player,
+        billboard = billboard,
+        label = label,
+        highlight = nil,
+        lastModel = nil,
+        lastHead = nil,
+        needsRefresh = false,
+        refreshPending = false,
+    }
 
+    -- If model already loaded, create initial highlight now
     local char = gameChar.Character
     if char and char.Model and char.Model.Parent then
         local head = char.Model:FindFirstChild("Head")
         if head then
             billboard.Adornee = head
-            data.head = head
+            data.lastHead = head
         end
-        highlight.Adornee = char.Model
-        data.model = char.Model
+        data.highlight = createHighlightFor(gameChar, char.Model, settings.espEnemyColor)
+        data.lastModel = char.Model
+        data.needsRefresh = true
     end
 
     espData[gameChar] = data
@@ -749,8 +802,8 @@ local function applyTargetHighlight(model)
     h.FillTransparency = 0.5
     h.OutlineColor = Color3.new(1, 1, 1)
     h.OutlineTransparency = 0
-    h.Adornee = model
     h.Parent = chamFolder
+    h.Adornee = model
     currentTargetHighlight = h
     currentTargetModel = model
 end
@@ -759,7 +812,7 @@ RunService.Heartbeat:Connect(function()
     if not settings.espEnabled then
         for _, data in pairs(espData) do
             if data.billboard then data.billboard.Enabled = false end
-            if data.highlight then data.highlight.Enabled = false end
+            if data.highlight and data.highlight.Parent then data.highlight.Enabled = false end
         end
         clearTargetHighlight()
         return
@@ -774,8 +827,8 @@ RunService.Heartbeat:Connect(function()
         local gcPlayer = gameChar.Player
         if gcPlayer == LocalPlayer then
             if data.billboard then data.billboard.Enabled = false end
-            if data.highlight then data.highlight.Enabled = false end
-            data.model = nil; data.head = nil
+            if data.highlight and data.highlight.Parent then data.highlight.Enabled = false end
+            data.lastModel = nil; data.lastHead = nil
             continue
         end
 
@@ -791,16 +844,10 @@ RunService.Heartbeat:Connect(function()
 
         if not modelReady or not head or not alive then
             if data.billboard then data.billboard.Enabled = false end
-            if data.highlight then data.highlight.Enabled = false end
-            data.model = nil; data.head = nil
+            if data.highlight and data.highlight.Parent then data.highlight.Enabled = false end
+            data.lastModel = nil; data.lastHead = nil
             continue
         end
-
-        local adorneeStale = (data.model ~= model) or (data.head ~= head)
-        data.billboard.Adornee = head
-        data.highlight.Adornee = model
-        data.model = model
-        data.head = head
 
         local ok, rel = pcall(function() return gameChar.GamePlayer:GetLocalRelationship() end)
         local isEnemy = (ok and rel == "Enemy")
@@ -816,11 +863,34 @@ RunService.Heartbeat:Connect(function()
 
         if not shouldShow then
             if data.billboard then data.billboard.Enabled = false end
-            if data.highlight then data.highlight.Enabled = false end
+            if data.highlight and data.highlight.Parent then data.highlight.Enabled = false end
             continue
         end
 
         local color = isEnemy and settings.espEnemyColor or settings.espTeamColor
+
+        -- NEW: recreate Highlight when model changes (fixes first-render bug)
+        if data.lastModel ~= model then
+            if data.highlight then
+                pcall(function() data.highlight:Destroy() end)
+            end
+            data.highlight = createHighlightFor(gameChar, model, color)
+            data.lastModel = model
+            data.needsRefresh = true
+        end
+
+        -- Update adornee on billboard if changed
+        if data.lastHead ~= head then
+            data.billboard.Adornee = head
+            data.lastHead = head
+        end
+
+        -- Ensure highlight adornee matches (cheap idempotent set)
+        if data.highlight and data.highlight.Parent and data.highlight.Adornee ~= model then
+            data.highlight.Adornee = model
+        end
+
+        -- Label / billboard
         local hp = gameChar.DamageReceiver and gameChar.DamageReceiver.Health or (hum and hum.Health) or 0
         local hpMax = gameChar.DamageReceiver and gameChar.DamageReceiver.MaxHealth or (hum and hum.MaxHealth) or 100
         local dist = 0
@@ -837,22 +907,37 @@ RunService.Heartbeat:Connect(function()
         data.label.TextColor3 = color
         data.billboard.Enabled = true
 
-        if settings.espChams then
+        -- Chams handling
+        if settings.espChams and data.highlight and data.highlight.Parent then
             data.highlight.FillColor = color
             data.highlight.OutlineColor = color
-            if adorneeStale then
-                data.highlight.Enabled = false
-                data.highlight.Enabled = true
-            elseif not data.highlight.Enabled then
+
+            if data.needsRefresh and not data.refreshPending then
+                -- Cross-frame enable: highlight was created Enabled=false,
+                -- now wait one Heartbeat then flip to true.
+                data.refreshPending = true
+                local hl = data.highlight
+                task.spawn(function()
+                    RunService.Heartbeat:Wait()
+                    RunService.Heartbeat:Wait()  -- two frames for safety
+                    data.refreshPending = false
+                    data.needsRefresh = false
+                    if hl and hl.Parent and settings.espEnabled and settings.espChams then
+                        hl.Enabled = true
+                    end
+                end)
+            elseif not data.needsRefresh and not data.highlight.Enabled then
                 data.highlight.Enabled = true
             end
         else
-            data.highlight.Enabled = false
+            if data.highlight and data.highlight.Parent and data.highlight.Enabled then
+                data.highlight.Enabled = false
+            end
         end
     end
 
     if settings.targetHighlight then
-        local head, _, gameChar = GetClosestHead(true, false)
+        local part, _, gameChar = GetClosestTarget(true, false, settings.silentAimPart)
         if gameChar and gameChar.Character and gameChar.Character.IsAlive and gameChar.Character.Model then
             applyTargetHighlight(gameChar.Character.Model)
         else
@@ -908,8 +993,8 @@ local function updateTrapEsp()
             hl.OutlineColor = settings.trapEspColor
             hl.OutlineTransparency = 0
             hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-            hl.Adornee = t.adornee
             hl.Parent = trapEspFolder
+            hl.Adornee = t.adornee
             trapEspCache[t.adornee] = hl
         end
     end
@@ -925,208 +1010,6 @@ task.spawn(function()
     while true do
         task.wait(0.3)
         pcall(updateTrapEsp)
-    end
-end)
-
--- ============================================================
---  NEW: AUTO WEAPON SWAP (knife → gun → knife)
--- ============================================================
-local swapState = {
-    inProgress = false,
-    startedAt = 0,
-    swapBackAt = 0,
-    lastSwapTime = 0,
-    wasThrowing = false,
-}
-
-local function GetEquippedKnife()
-    for _, tool in ipairs(GetAllTools()) do
-        if tool.Equipped and ResolveWeaponType(tool) == "knife" then return tool end
-    end
-    return nil
-end
-
-local function GetEquippedGun()
-    for _, tool in ipairs(GetAllTools()) do
-        if tool.Equipped and ResolveWeaponType(tool) == "gun" then return tool end
-    end
-    return nil
-end
-
-local function FindToolOfType(wType)
-    for _, tool in ipairs(GetAllTools()) do
-        if ResolveWeaponType(tool) == wType then return tool end
-    end
-    return nil
-end
-
-local function FindActualTool(wrappedTool)
-    if not wrappedTool then return nil end
-    if typeof(wrappedTool.Tool) == "Instance" and wrappedTool.Tool:IsA("Tool") then return wrappedTool.Tool end
-    if wrappedTool.Store and typeof(wrappedTool.Store.Tool) == "Instance" and wrappedTool.Store.Tool:IsA("Tool") then
-        return wrappedTool.Store.Tool
-    end
-    local name = (wrappedTool.Setup and wrappedTool.Setup.Name) or wrappedTool.Name
-    if not name then return nil end
-    local char = LocalPlayer.Character
-    if char then
-        for _, child in ipairs(char:GetChildren()) do
-            if child:IsA("Tool") and child.Name == name then return child end
-        end
-    end
-    local backpack = LocalPlayer:FindFirstChild("Backpack")
-    if backpack then
-        for _, child in ipairs(backpack:GetChildren()) do
-            if child:IsA("Tool") and child.Name == name then return child end
-        end
-    end
-    return nil
-end
-
-local function EquipTool(wrappedTool)
-    if not wrappedTool then return false end
-    local char = LocalPlayer.Character
-    if not char then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
-    local actual = FindActualTool(wrappedTool)
-    if not actual then return false end
-    local ok = pcall(function() hum:EquipTool(actual) end)
-    return ok
-end
-
-local function CountEnemiesInRadius(radius)
-    local localChar = LocalPlayer.Character
-    if not localChar then return 0 end
-    local root = localChar:FindFirstChild("HumanoidRootPart")
-    if not root then return 0 end
-    local count = 0
-    for _, gameChar in ipairs(m_GameCharacterController.GetGameCharacters()) do
-        if gameChar.Player == LocalPlayer then continue end
-        if gameChar.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
-        local char = gameChar.Character
-        if not char or not char.IsAlive or not char.RootPart then continue end
-        if HasForceField(char.Model) then continue end
-        if (char.RootPart.Position - root.Position).Magnitude <= radius then
-            count = count + 1
-        end
-    end
-    return count
-end
-
-local function KnifeWillBeReadyIn(seconds)
-    local knife = GetEquippedKnife()
-    if not knife then
-        knife = FindToolOfType("knife")
-        if not knife then return true end
-        return true
-    end
-    local fsm = knife.Store and knife.Store.FSM
-    if not fsm then return true end
-    local state = tostring(fsm.State or "")
-    if state == "Idle" and not chargeStartedAt[knife] then return true end
-    if chargeStartedAt[knife] then
-        local remaining = settings.chargeTime - (tick() - chargeStartedAt[knife])
-        if remaining <= 0 then return true end
-        return remaining <= seconds
-    end
-    local sinceThrow = tick() - lastKnifeThrow
-    local totalCycle = settings.knifeTriggerDelay + settings.chargeTime + 0.2
-    local remaining = totalCycle - sinceThrow
-    if remaining <= 0 then return true end
-    return remaining <= seconds
-end
-
-local function SwapBackToKnife()
-    swapState.inProgress = false
-    swapState.swapBackAt = 0
-    local knife = FindToolOfType("knife")
-    if knife then
-        EquipTool(knife)
-        swapState.lastSwapTime = tick()
-    end
-end
-
-task.spawn(function()
-    while true do
-        task.wait(0.1)
-
-        if not settings.weaponSwap.enabled then
-            swapState.wasThrowing = false
-            swapState.inProgress = false
-            swapState.swapBackAt = 0
-            continue
-        end
-
-        -- Handle pending swap-back to knife
-        if swapState.inProgress then
-            -- Cancel if user manually swapped away from gun
-            if not GetEquippedGun() then
-                swapState.inProgress = false
-                swapState.swapBackAt = 0
-                continue
-            end
-
-            local heldTime = tick() - swapState.startedAt
-            local minHold = settings.weaponSwap.switchBackDelay
-            local maxHold = settings.weaponSwap.maxGunHoldTime
-
-            if heldTime >= maxHold then
-                SwapBackToKnife()
-            elseif heldTime >= minHold and KnifeWillBeReadyIn(0.15) then
-                SwapBackToKnife()
-            end
-            continue
-        end
-
-        -- Must be on knife to consider swapping
-        local equipped = GetEquippedKnife()
-        if not equipped then
-            swapState.wasThrowing = false
-            continue
-        end
-
-        local fsm = equipped.Store and equipped.Store.FSM
-        if not fsm then continue end
-        local state = tostring(fsm.State or "")
-
-        -- Detect throw completion (was in Throw, now not)
-        local throwComplete = false
-        if state == "Throw" then
-            swapState.wasThrowing = true
-        elseif swapState.wasThrowing then
-            swapState.wasThrowing = false
-            throwComplete = true
-        end
-
-        -- Cooldown between swaps
-        if tick() - swapState.lastSwapTime < settings.weaponSwap.swapCooldown then continue end
-
-        local enemies = CountEnemiesInRadius(settings.weaponSwap.enemyRadius)
-
-        local shouldSwap = false
-
-        if throwComplete and enemies >= 1 then
-            -- Miss OR another player there → swap
-            if not KnifeWillBeReadyIn(0.15) then
-                shouldSwap = true
-            end
-        elseif throwComplete and enemies == 0 and settings.weaponSwap.useDefensiveSwap then
-            -- Clean kill + no enemies → swap only if knife is down for a long time
-            if not KnifeWillBeReadyIn(settings.weaponSwap.defensiveSwapThreshold) then
-                shouldSwap = true
-            end
-        end
-
-        if shouldSwap then
-            local gun = FindToolOfType("gun")
-            if gun then
-                EquipTool(gun)
-                swapState.inProgress = true
-                swapState.startedAt = tick()
-                swapState.lastSwapTime = tick()
-            end
-        end
     end
 end)
 
@@ -1492,29 +1375,13 @@ UI:CreateToggle(combatTab, "Auto Reload", false, function(v) settings.autoReload
 UI:CreateToggle(combatTab, "Ignore Forcefield", false, function(v) settings.ignoreForcefield = v end)
 
 UI:CreateSection(combatTab, "Combat")
-UI:CreateToggle(combatTab, "Silent Aim (visible heads, any angle)", false, function(v) settings.silentAim = v end)
+UI:CreateToggle(combatTab, "Silent Aim (visible target, any angle)", false, function(v) settings.silentAim = v end)
+-- NEW: silent aim target selector
+UI:CreateDropdown(combatTab, "Silent Aim Target",
+    {"Head", "Torso", "UpperTorso", "LowerTorso", "HumanoidRootPart", "Random"},
+    "Head", function(opt) settings.silentAimPart = opt end)
 UI:CreateToggle(combatTab, "Infinite Ammo", false, function(v) settings.infiniteAmmo = v end)
 UI:CreateButton(combatTab, "Fire Once Now", function() TryFire() end)
-
--- NEW: Auto Weapon Swap section
-UI:CreateSection(combatTab, "Auto Weapon Swap (Knife → Gun → Knife)")
-UI:CreateToggle(combatTab, "Enable Auto Weapon Swap", false, function(v) settings.weaponSwap.enabled = v end)
-UI:CreateSlider(combatTab, "Enemy Radius (studs)", 20, 200, 60, function(v) settings.weaponSwap.enemyRadius = v end)
-UI:CreateSlider(combatTab, "Swap Cooldown (ms)", 100, 2000, 300, function(v) settings.weaponSwap.swapCooldown = v / 1000 end)
-UI:CreateSlider(combatTab, "Min Gun Hold (ms)", 200, 3000, 500, function(v) settings.weaponSwap.switchBackDelay = v / 1000 end)
-UI:CreateSlider(combatTab, "Max Gun Hold (ms)", 500, 5000, 2000, function(v) settings.weaponSwap.maxGunHoldTime = v / 1000 end)
-UI:CreateToggle(combatTab, "Defensive Swap (no enemies, long cooldown)", true, function(v) settings.weaponSwap.useDefensiveSwap = v end)
-UI:CreateSlider(combatTab, "Defensive Threshold (ms)", 500, 5000, 3000, function(v) settings.weaponSwap.defensiveSwapThreshold = v / 1000 end)
-UI:CreateButton(combatTab, "Force Swap To Gun Now", function()
-    if swapState.inProgress then return end
-    local gun = FindToolOfType("gun")
-    if gun then
-        EquipTool(gun)
-        swapState.inProgress = true
-        swapState.startedAt = tick()
-        swapState.lastSwapTime = tick()
-    end
-end)
 
 UI:CreateSection(combatTab, "Auto Shoot Traps")
 UI:CreateToggle(combatTab, "Auto Shoot Traps (silent aim)", false, function(v) settings.autoShootTraps = v end)
@@ -1577,4 +1444,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — Auto Weapon Swap added (knife→gun→knife). All toggles OFF by default.")
+print("[SHARP] Loaded — silent aim target selector + ESP chams fix. All toggles OFF by default.")
