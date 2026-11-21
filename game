@@ -38,13 +38,13 @@ local settings = {
         BearTrap = false, Goop = false, Curse = false,
         ShockMine = false, TeleportGate = false,
     },
-    -- ===== NEW: predictive dodge =====
+    -- ===== Predictive dodge (new aggressive defaults) =====
     predictiveDodge = false,
-    dodgeThreatRange = 22,
-    dodgeFacingDot = 0.45,
+    dodgeThreatRange = 25,
+    dodgeFacingDot = 0.35,
     dodgeStrafeDistance = 18,
-    dodgeCooldown = 0.35,
-    -- ===== legacy (kept for compatibility, unused) =====
+    dodgeCooldown = 0.20,
+    -- ===== Legacy (inert, kept for compat) =====
     dodgeKnife = false,
     dodgeRadius = 12,
     dodgeReactionTime = 0.25,
@@ -538,39 +538,46 @@ RunService.Stepped:Connect(function()
 end)
 
 -- ============================================================
--- PREDICTIVE DODGE  (replaces old projectile-based dodge)
--- Diagnostic proved: lethal knives spawn AFTER the damage event
--- with speed=0 at your feet. Client cannot outrun them. The only
--- viable window is the enemy's in-hand knife + facing direction.
+-- PREDICTIVE DODGE v2 — BROADER DETECTION + INSTANT DASH
+-- Old version: MoveTo (walk speed) + narrow WorldModel check.
+-- New version: BodyVelocity 130 studs/s + 4-stud teleport.
+-- ~7x faster than walk speed. Detection scans all descendants.
 -- ============================================================
 local predictiveDodge = {
     cooldownUntil = 0,
     lastDir = 1,
+    activeDash = nil,
+    dashSpeed = 130,
+    dashDuration = 0.18,
 }
 
-local KNIFE_TOOL_KEYWORDS = { "knife", "blade", "dagger", "melee", "throw" }
-local KNIFE_ANIM_KEYWORDS = { "throw", "charge", "knife", "stab", "slash" }
+local KNIFE_KEYWORDS = { "knife", "blade", "dagger", "throw", "bayonet", "cleaver" }
 
-local function enemyHasKnifeDrawn(emodel, gameChar)
-    -- In-hand knife per diagnostic lives under Character.WorldModel
-    local worldModel = emodel:FindFirstChild("WorldModel")
-    if worldModel then
-        for _, d in ipairs(worldModel:GetChildren()) do
-            if d:IsA("BasePart") then
-                local n = string.lower(d.Name)
-                for _, kw in ipairs(KNIFE_TOOL_KEYWORDS) do
-                    if n:find(kw) then return true end
-                end
-            end
+local function nameIsKnife(n)
+    n = string.lower(n)
+    for _, kw in ipairs(KNIFE_KEYWORDS) do
+        if n:find(kw) then return true end
+    end
+    return false
+end
+
+local function enemyHasKnifeDrawn(emodel, gc)
+    -- 1. Any BasePart or Tool anywhere on the enemy model
+    for _, d in ipairs(emodel:GetDescendants()) do
+        if d:IsA("BasePart") or d:IsA("Tool") then
+            if nameIsKnife(d.Name) then return true end
         end
     end
-    -- Fallback: equipped Tool
-    if gameChar and gameChar.Player then
-        for _, tool in ipairs(gameChar.Player:GetChildren()) do
-            if tool:IsA("Tool") then
-                local n = string.lower(tool.Name)
-                for _, kw in ipairs(KNIFE_TOOL_KEYWORDS) do
-                    if n:find(kw) then return true end
+    -- 2. Equipped Tool directly under model
+    local equipped = emodel:FindFirstChildOfClass("Tool")
+    if equipped and nameIsKnife(equipped.Name) then return true end
+    -- 3. Player.Backpack — only counts if actually equipped (parented to char)
+    if gc and gc.Player then
+        local bp = gc.Player:FindFirstChild("Backpack")
+        if bp then
+            for _, tool in ipairs(bp:GetChildren()) do
+                if tool:IsA("Tool") and tool.Parent == emodel and nameIsKnife(tool.Name) then
+                    return true
                 end
             end
         end
@@ -578,24 +585,35 @@ local function enemyHasKnifeDrawn(emodel, gameChar)
     return false
 end
 
-local function enemyIsThrowingOrCharging(emodel)
-    local hum = emodel:FindFirstChildOfClass("Humanoid")
-    if not hum then return false end
-    local animator = hum:FindFirstChildOfClass("Animator")
-    if not animator then return false end
-    for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
-        local nm = string.lower(track.Name)
-        for _, kw in ipairs(KNIFE_ANIM_KEYWORDS) do
-            if nm:find(kw) then return true end
-        end
+local function willAimAtMe(enemyPos, enemyLook, myPos, tolerance)
+    local toMe = myPos - enemyPos
+    toMe = Vector3.new(toMe.X, 0, toMe.Z)
+    if toMe.Magnitude < 0.1 then return true end
+    local lookFlat = Vector3.new(enemyLook.X, 0, enemyLook.Z)
+    if lookFlat.Magnitude < 0.1 then return false end
+    lookFlat = lookFlat.Unit
+    local proj = toMe:Dot(lookFlat)
+    if proj <= 0 then return false end
+    local closest = lookFlat * proj
+    return (toMe - closest).Magnitude <= tolerance
+end
+
+local function enemyRelationshipIsEnemy(gc)
+    local ok, rel = pcall(function() return gc.GamePlayer:GetLocalRelationship() end)
+    if ok and rel then return rel == "Enemy" end
+    local me = LocalPlayer
+    local them = gc.Player
+    if me.TeamColor and them and them.TeamColor then
+        return them.TeamColor ~= me.TeamColor
     end
-    return false
+    return true
 end
 
 local function findKnifeThreat(myPos)
+    local best, bestDist = nil, math.huge
     for _, gc in ipairs(m_GameCharacterController.GetGameCharacters()) do
         if gc.Player == LocalPlayer then continue end
-        if gc.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
+        if not enemyRelationshipIsEnemy(gc) then continue end
         local c = gc.Character
         if not c or not c.IsAlive or not c.Model then continue end
         local emodel = c.Model
@@ -608,16 +626,74 @@ local function findKnifeThreat(myPos)
         local toMe = myPos - eRoot.Position
         if toMe.Magnitude < 0.1 then continue end
         local facing = eRoot.CFrame.LookVector
-        local facingDot = facing:Dot(toMe.Unit)
-        if facingDot < settings.dodgeFacingDot then continue end
-        local charging = enemyIsThrowingOrCharging(emodel)
-        return { root = eRoot, dist = dist, facingDot = facingDot, charging = charging, gameChar = gc }
+        local flatToMe = Vector3.new(toMe.X, 0, toMe.Z)
+        if flatToMe.Magnitude < 0.1 then flatToMe = Vector3.new(1,0,0) end
+        local facingDot = facing:Dot(flatToMe.Unit)
+        local willHit = (facingDot >= settings.dodgeFacingDot)
+            or willAimAtMe(eRoot.Position, facing, myPos, 6)
+            or dist < 8
+        if not willHit then continue end
+        if dist < bestDist then
+            bestDist = dist
+            best = { root = eRoot, dist = dist, facingDot = facingDot, gameChar = gc }
+        end
     end
-    return nil
+    return best
+end
+
+local function performDash(dir, distance)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local root = char:FindFirstChild("HumanoidRootPart")
+    if not hum or not root then return end
+
+    if predictiveDodge.activeDash and predictiveDodge.activeDash.Parent then
+        predictiveDodge.activeDash:Destroy()
+    end
+
+    dir = Vector3.new(dir.X, 0, dir.Z)
+    if dir.Magnitude < 0.1 then return end
+    dir = dir.Unit
+
+    -- Instant micro-teleport (4 studs) for guaranteed displacement
+    local teleOffset = dir * 4
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.FilterDescendantsInstances = { char }
+    local hit = workspace:Raycast(root.Position, teleOffset, rp)
+    if not hit then
+        pcall(function() root.CFrame = root.CFrame + teleOffset end)
+    end
+
+    -- Sustained dash via BodyVelocity (fast, ignores walk speed)
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "SharpDash"
+    bv.MaxForce = Vector3.new(math.huge, 0, math.huge)
+    bv.Velocity = dir * predictiveDodge.dashSpeed
+    bv.P = 10000
+    bv.Parent = root
+    predictiveDodge.activeDash = bv
+
+    pcall(function() hum:MoveTo(root.Position + dir * distance) end)
+
+    local dashRef = bv
+    task.delay(predictiveDodge.dashDuration, function()
+        if dashRef.Parent then dashRef:Destroy() end
+        if predictiveDodge.activeDash == dashRef then
+            predictiveDodge.activeDash = nil
+        end
+    end)
 end
 
 RunService.Heartbeat:Connect(function()
-    if not settings.predictiveDodge then return end
+    if not settings.predictiveDodge then
+        if predictiveDodge.activeDash and predictiveDodge.activeDash.Parent then
+            predictiveDodge.activeDash:Destroy()
+        end
+        predictiveDodge.activeDash = nil
+        return
+    end
     if tick() < predictiveDodge.cooldownUntil then return end
     local char = LocalPlayer.Character; if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
@@ -627,13 +703,11 @@ RunService.Heartbeat:Connect(function()
     local threat = findKnifeThreat(myPos)
     if not threat then return end
 
-    -- Perpendicular strafe away from the enemy's throw arc
     local toThreat = Vector3.new(
-        threat.root.Position.X - myPos.X,
-        0,
+        threat.root.Position.X - myPos.X, 0,
         threat.root.Position.Z - myPos.Z
     )
-    if toThreat.Magnitude < 0.1 then return end
+    if toThreat.Magnitude < 0.1 then toThreat = Vector3.new(1, 0, 0) end
     local perp = Vector3.new(-toThreat.Unit.Z, 0, toThreat.Unit.X)
 
     local rp = RaycastParams.new()
@@ -647,11 +721,11 @@ RunService.Heartbeat:Connect(function()
     local dir
     if hitA and not hitB then dir = -perp
     elseif hitB and not hitA then dir = perp
-    elseif hitA and hitB then return -- boxed in, don't dodge into a wall
+    elseif hitA and hitB then dir = -toThreat.Unit  -- boxed in → back away
     else dir = perp * predictiveDodge.lastDir end
 
     predictiveDodge.lastDir = -predictiveDodge.lastDir
-    hum:MoveTo(myPos + dir * probe)
+    performDash(dir, probe)
     predictiveDodge.cooldownUntil = tick() + settings.dodgeCooldown
 end)
 
@@ -872,8 +946,6 @@ RunService.Heartbeat:Connect(function()
 
     local localChar = LocalPlayer.Character
     local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
-    local localHum = localChar and localChar:FindFirstChildOfClass("Humanoid")
-    local localAlive = localHum and localHum.Health > 0
 
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then
@@ -1454,13 +1526,12 @@ UI:CreateToggle(combatTab, "Curse Barrier", false, function(v) settings.trapBarr
 UI:CreateToggle(combatTab, "Shock Mine Barrier", false, function(v) settings.trapBarrierTypes.ShockMine = v end)
 UI:CreateToggle(combatTab, "Teleport Gate Barrier", false, function(v) settings.trapBarrierTypes.TeleportGate = v end)
 
--- ===== New Predictive Dodge section =====
-UI:CreateSection(combatTab, "Dodge Knife (Predictive)")
+UI:CreateSection(combatTab, "Dodge Knife (Instant Dash)")
 UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v) settings.predictiveDodge = v end)
-UI:CreateSlider(combatTab, "Threat Range (studs)", 8, 40, 22, function(v) settings.dodgeThreatRange = v end)
-UI:CreateSlider(combatTab, "Facing Threshold (÷100)", 10, 95, 45, function(v) settings.dodgeFacingDot = v / 100 end)
+UI:CreateSlider(combatTab, "Threat Range (studs)", 8, 40, 25, function(v) settings.dodgeThreatRange = v end)
+UI:CreateSlider(combatTab, "Facing Threshold (÷100)", 10, 95, 35, function(v) settings.dodgeFacingDot = v / 100 end)
 UI:CreateSlider(combatTab, "Strafe Distance (studs)", 5, 40, 18, function(v) settings.dodgeStrafeDistance = v end)
-UI:CreateSlider(combatTab, "Dodge Cooldown (÷100 s)", 10, 100, 35, function(v) settings.dodgeCooldown = v / 100 end)
+UI:CreateSlider(combatTab, "Dodge Cooldown (÷100 s)", 10, 100, 20, function(v) settings.dodgeCooldown = v / 100 end)
 
 UI:CreateSection(aimbotTab, "Aimbot")
 UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
@@ -1501,4 +1572,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — predictive dodge installed. Old projectile-dodge removed (diagnostics proved it cannot catch server-side knife hits).")
+print("[SHARP] Loaded — dodge now uses BodyVelocity (130 studs/s) + 4-stud teleport + broad knife detection. If it still doesn't dodge, the enemy's knife isn't detectable client-side before the throw resolves.")
