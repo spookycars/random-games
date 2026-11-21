@@ -38,6 +38,13 @@ local settings = {
         BearTrap = false, Goop = false, Curse = false,
         ShockMine = false, TeleportGate = false,
     },
+    -- ===== NEW: predictive dodge =====
+    predictiveDodge = false,
+    dodgeThreatRange = 22,
+    dodgeFacingDot = 0.45,
+    dodgeStrafeDistance = 18,
+    dodgeCooldown = 0.35,
+    -- ===== legacy (kept for compatibility, unused) =====
     dodgeKnife = false,
     dodgeRadius = 12,
     dodgeReactionTime = 0.25,
@@ -530,58 +537,127 @@ RunService.Stepped:Connect(function()
     end
 end)
 
-local KNIFE_DODGE_NAMES = { "knife", "thrownknife", "projectile" }
-local function isThrownKnife(part)
-    if not part or not part:IsA("BasePart") then return false end
-    local n = string.lower(part.Name)
-    for _, pattern in ipairs(KNIFE_DODGE_NAMES) do
-        if n:find(pattern) then return true end
+-- ============================================================
+-- PREDICTIVE DODGE  (replaces old projectile-based dodge)
+-- Diagnostic proved: lethal knives spawn AFTER the damage event
+-- with speed=0 at your feet. Client cannot outrun them. The only
+-- viable window is the enemy's in-hand knife + facing direction.
+-- ============================================================
+local predictiveDodge = {
+    cooldownUntil = 0,
+    lastDir = 1,
+}
+
+local KNIFE_TOOL_KEYWORDS = { "knife", "blade", "dagger", "melee", "throw" }
+local KNIFE_ANIM_KEYWORDS = { "throw", "charge", "knife", "stab", "slash" }
+
+local function enemyHasKnifeDrawn(emodel, gameChar)
+    -- In-hand knife per diagnostic lives under Character.WorldModel
+    local worldModel = emodel:FindFirstChild("WorldModel")
+    if worldModel then
+        for _, d in ipairs(worldModel:GetChildren()) do
+            if d:IsA("BasePart") then
+                local n = string.lower(d.Name)
+                for _, kw in ipairs(KNIFE_TOOL_KEYWORDS) do
+                    if n:find(kw) then return true end
+                end
+            end
+        end
+    end
+    -- Fallback: equipped Tool
+    if gameChar and gameChar.Player then
+        for _, tool in ipairs(gameChar.Player:GetChildren()) do
+            if tool:IsA("Tool") then
+                local n = string.lower(tool.Name)
+                for _, kw in ipairs(KNIFE_TOOL_KEYWORDS) do
+                    if n:find(kw) then return true end
+                end
+            end
+        end
     end
     return false
 end
 
-local dodgeCooldown = 0
-local DODGE_COOLDOWN_TIME = 0.4
+local function enemyIsThrowingOrCharging(emodel)
+    local hum = emodel:FindFirstChildOfClass("Humanoid")
+    if not hum then return false end
+    local animator = hum:FindFirstChildOfClass("Animator")
+    if not animator then return false end
+    for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+        local nm = string.lower(track.Name)
+        for _, kw in ipairs(KNIFE_ANIM_KEYWORDS) do
+            if nm:find(kw) then return true end
+        end
+    end
+    return false
+end
+
+local function findKnifeThreat(myPos)
+    for _, gc in ipairs(m_GameCharacterController.GetGameCharacters()) do
+        if gc.Player == LocalPlayer then continue end
+        if gc.GamePlayer:GetLocalRelationship() ~= "Enemy" then continue end
+        local c = gc.Character
+        if not c or not c.IsAlive or not c.Model then continue end
+        local emodel = c.Model
+        local eRoot = emodel:FindFirstChild("HumanoidRootPart")
+        if not eRoot then continue end
+        local dist = (eRoot.Position - myPos).Magnitude
+        if dist > settings.dodgeThreatRange then continue end
+        if settings.ignoreForcefield and HasForceField(emodel) then continue end
+        if not enemyHasKnifeDrawn(emodel, gc) then continue end
+        local toMe = myPos - eRoot.Position
+        if toMe.Magnitude < 0.1 then continue end
+        local facing = eRoot.CFrame.LookVector
+        local facingDot = facing:Dot(toMe.Unit)
+        if facingDot < settings.dodgeFacingDot then continue end
+        local charging = enemyIsThrowingOrCharging(emodel)
+        return { root = eRoot, dist = dist, facingDot = facingDot, charging = charging, gameChar = gc }
+    end
+    return nil
+end
 
 RunService.Heartbeat:Connect(function()
-    if not settings.dodgeKnife then return end
-    if tick() - dodgeCooldown < DODGE_COOLDOWN_TIME then return end
+    if not settings.predictiveDodge then return end
+    if tick() < predictiveDodge.cooldownUntil then return end
     local char = LocalPlayer.Character; if not char then return end
     local hum = char:FindFirstChildOfClass("Humanoid")
     local root = char:FindFirstChild("HumanoidRootPart")
     if not hum or not root or hum.Health <= 0 then return end
     local myPos = root.Position
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if isThrownKnife(obj) then
-            local velocity = obj.AssemblyLinearVelocity
-            local speed = velocity.Magnitude
-            if speed < 20 then continue end
-            local toMe = myPos - obj.Position
-            local distance = toMe.Magnitude
-            if distance > settings.dodgeRadius or distance < 1 then continue end
-            if velocity.Unit:Dot(toMe.Unit) > 0.85 then
-                local timeToImpact = distance / speed
-                if timeToImpact <= settings.dodgeReactionTime then
-                    local horizontalVel = Vector3.new(velocity.X, 0, velocity.Z)
-                    if horizontalVel.Magnitude < 0.1 then continue end
-                    local perp = Vector3.new(-horizontalVel.Z, 0, horizontalVel.X).Unit
-                    local rp = RaycastParams.new()
-                    rp.FilterType = Enum.RaycastFilterType.Exclude
-                    rp.FilterDescendantsInstances = {char}
-                    local dodgeOrigin = myPos + Vector3.new(0, 2.5, 0)
-                    local hitA = workspace:Raycast(dodgeOrigin, perp * 12, rp)
-                    local hitB = workspace:Raycast(dodgeOrigin, -perp * 12, rp)
-                    local dodgeDir = perp
-                    if hitA and not hitB then dodgeDir = -perp
-                    elseif hitA and hitB then continue end
-                    hum:MoveTo(myPos + dodgeDir * 10)
-                    dodgeCooldown = tick(); return
-                end
-            end
-        end
-    end
+    local threat = findKnifeThreat(myPos)
+    if not threat then return end
+
+    -- Perpendicular strafe away from the enemy's throw arc
+    local toThreat = Vector3.new(
+        threat.root.Position.X - myPos.X,
+        0,
+        threat.root.Position.Z - myPos.Z
+    )
+    if toThreat.Magnitude < 0.1 then return end
+    local perp = Vector3.new(-toThreat.Unit.Z, 0, toThreat.Unit.X)
+
+    local rp = RaycastParams.new()
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    rp.FilterDescendantsInstances = { char }
+    local origin = myPos + Vector3.new(0, 2.5, 0)
+    local probe = settings.dodgeStrafeDistance
+    local hitA = workspace:Raycast(origin, perp * probe, rp)
+    local hitB = workspace:Raycast(origin, -perp * probe, rp)
+
+    local dir
+    if hitA and not hitB then dir = -perp
+    elseif hitB and not hitA then dir = perp
+    elseif hitA and hitB then return -- boxed in, don't dodge into a wall
+    else dir = perp * predictiveDodge.lastDir end
+
+    predictiveDodge.lastDir = -predictiveDodge.lastDir
+    hum:MoveTo(myPos + dir * probe)
+    predictiveDodge.cooldownUntil = tick() + settings.dodgeCooldown
 end)
 
+-- ============================================================
+-- AIMBOT
+-- ============================================================
 local function aimbotIsVisible(targetPart, targetModel)
     if not settings.aimbot.wallCheck or not targetModel then return true end
     local origin = Camera.CFrame.Position
@@ -672,10 +748,7 @@ RunService.RenderStepped:Connect(aimbotUpdate)
 Players.LocalPlayer.CharacterAdded:Connect(function() targetLocked = nil end)
 
 -- ============================================================
---  ESP — Highlight with DescendantAdded hook for part replication
---  FIX: Highlight snapshots parts at Adornee-assignment time.
---       Hook DescendantAdded on the model → force-recreate on
---       new BasePart → catches parts that replicate late.
+-- ESP
 -- ============================================================
 local espFolder = Instance.new("Folder")
 espFolder.Name = "SharpESPData"
@@ -864,7 +937,6 @@ RunService.Heartbeat:Connect(function()
             espState[player] = state
         end
 
-        -- Handle queued force-recreate (from DescendantAdded hook)
         if state.forceRecreate and not state.recreatePending then
             state.recreatePending = true
             task.delay(0.2, function()
@@ -880,7 +952,6 @@ RunService.Heartbeat:Connect(function()
             end)
         end
 
-        -- Create or recreate highlight if invalid
         local needsCreate = (not state.highlight)
             or (not state.highlight.Parent)
             or (state.highlightModel ~= model)
@@ -890,7 +961,6 @@ RunService.Heartbeat:Connect(function()
             state.highlight = createHighlightFor(player, model, color)
             state.highlightModel = model
 
-            -- FIX: Hook DescendantAdded so late-arriving parts trigger a recreate
             if state.partHook then pcall(function() state.partHook:Disconnect() end) end
             state.partHookModel = model
             state.partHook = model.DescendantAdded:Connect(function(desc)
@@ -910,7 +980,6 @@ RunService.Heartbeat:Connect(function()
             state.highlight.Enabled = settings.espChams
         end
 
-        -- Billboard
         local needsBb = (not state.billboard)
             or (not state.billboard.Parent)
             or (state.billboard.Adornee ~= head)
@@ -922,7 +991,6 @@ RunService.Heartbeat:Connect(function()
             state.label.TextColor3 = color
         end
 
-        -- Label text
         if state.label then
             local parts = {}
             if settings.espNames then table.insert(parts, player.Name) end
@@ -1386,10 +1454,13 @@ UI:CreateToggle(combatTab, "Curse Barrier", false, function(v) settings.trapBarr
 UI:CreateToggle(combatTab, "Shock Mine Barrier", false, function(v) settings.trapBarrierTypes.ShockMine = v end)
 UI:CreateToggle(combatTab, "Teleport Gate Barrier", false, function(v) settings.trapBarrierTypes.TeleportGate = v end)
 
-UI:CreateSection(combatTab, "Dodge")
-UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v) settings.dodgeKnife = v end)
-UI:CreateSlider(combatTab, "Dodge Radius (studs)", 5, 30, 12, function(v) settings.dodgeRadius = v end)
-UI:CreateSlider(combatTab, "Dodge Reaction Time (÷100 s)", 10, 50, 25, function(v) settings.dodgeReactionTime = v / 100 end)
+-- ===== New Predictive Dodge section =====
+UI:CreateSection(combatTab, "Dodge Knife (Predictive)")
+UI:CreateToggle(combatTab, "Dodge Knife Throws", false, function(v) settings.predictiveDodge = v end)
+UI:CreateSlider(combatTab, "Threat Range (studs)", 8, 40, 22, function(v) settings.dodgeThreatRange = v end)
+UI:CreateSlider(combatTab, "Facing Threshold (÷100)", 10, 95, 45, function(v) settings.dodgeFacingDot = v / 100 end)
+UI:CreateSlider(combatTab, "Strafe Distance (studs)", 5, 40, 18, function(v) settings.dodgeStrafeDistance = v end)
+UI:CreateSlider(combatTab, "Dodge Cooldown (÷100 s)", 10, 100, 35, function(v) settings.dodgeCooldown = v / 100 end)
 
 UI:CreateSection(aimbotTab, "Aimbot")
 UI:CreateToggle(aimbotTab, "Activate Aimbot", false, function(v) settings.aimbot.enabled = v; targetLocked = nil end)
@@ -1430,4 +1501,4 @@ UI:CreateToggle(visualTab, "Target Highlight", false, function(v) settings.targe
 UI:CreateToggle(visualTab, "Knife Tracers", false, function(v) settings.knifeTracers = v end)
 UI:CreateColorPicker(visualTab, "Knife Tracer Color", Color3.fromRGB(255,200,0), function(c) settings.knifeTracerColor = c end)
 
-print("[SHARP] Loaded — ESP Highlight now hooks DescendantAdded to catch late-replicated parts. All toggles OFF by default.")
+print("[SHARP] Loaded — predictive dodge installed. Old projectile-dodge removed (diagnostics proved it cannot catch server-side knife hits).")
